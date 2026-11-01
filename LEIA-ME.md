@@ -1,0 +1,64 @@
+# Manda Chuva BOT
+
+Bot de Discord que dá cor ao nome por botão. Clicou num botão, ganha a cor (uma por vez). Clicou de novo, tira. Também tem o botão "Tirar cor" e o comando `/cor`.
+
+A configuração (cores, textos do embed, botões, respostas) é feita pela **interface web**, que fica em outro repositório: [Interface-Manda-Chuva-Bot](https://github.com/PedroA07/Interface-Manda-Chuva-Bot). Este repositório é só o bot + a API que a interface usa.
+
+```
+Interface (GitHub Pages)  ──senha──▶  API deste bot (Render)  ──▶  Discord
+https://pedroa07.github.io/...        https://manda-chuva-bot.onrender.com
+```
+
+## 1. Criar o bot no Discord
+
+1. Abra https://discord.com/developers/applications → **New Application** → dê o nome (ex.: Manda Chuva).
+2. Aba **Bot** → **Reset Token** → copie o token. Guarde: ele é a senha do bot. Não precisa ligar nenhum "Privileged Gateway Intent".
+
+## 2. Testar no seu PC (opcional)
+
+Precisa do Node 20.12 ou mais novo.
+
+```
+copy .env.example .env      (e cole o token em DISCORD_TOKEN)
+npm install
+npm start
+```
+
+Sem `PAINEL_SENHA`, a API só aceita acesso do próprio PC. Abra a interface (veja o LEIA-ME dela) com o endereço `http://localhost:3000`. O link pra adicionar o bot a um servidor aparece no terminal e na interface.
+
+## 3. Subir na Render (grátis)
+
+1. **Gist pra guardar a configuração.** A Render grátis apaga os arquivos sempre que reinicia, então a configuração fica num Gist secreto:
+   - Crie em https://gist.github.com um gist **secreto** com um arquivo chamado `paineis.json` contendo `[]`. O ID é o código no fim do endereço (`gist.github.com/PedroA07/` **`este-código`**).
+   - Crie um token só com a permissão de gist: [github.com/settings/tokens/new?scopes=gist](https://github.com/settings/tokens/new?scopes=gist&description=Manda-Chuva-BOT). Em "Expiration", escolha o prazo que preferir.
+2. **Crie o serviço:** abra https://render.com/deploy?repo=https://github.com/PedroA07/Manda-Chuva-BOT (entre com o GitHub). A Render lê o `render.yaml` e pede:
+   - `DISCORD_TOKEN`: o token do passo 1.
+   - `PAINEL_SENHA`: uma senha forte, com 12 caracteres ou mais. É ela que a interface vai pedir.
+   - `GIST_ID` e `GIST_TOKEN`: do item acima.
+3. Espere o deploy terminar e copie o endereço do serviço (algo como `https://manda-chuva-bot.onrender.com`). Abrindo esse endereço no navegador deve aparecer `{"ok":true,"bot":"online"}`.
+4. Abra a interface, coloque esse endereço e a senha.
+
+O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereço a cada 10 min, porque a Render grátis desliga o serviço depois de 15 min sem acesso (e aí o bot sai do Discord). O plano grátis dá 750 horas por mês, o que cobre um serviço ligado o mês todo.
+
+## Variáveis
+
+| Variável | Pra quê |
+|---|---|
+| `DISCORD_TOKEN` | Token do bot. |
+| `PAINEL_SENHA` | Senha da interface (mínimo 12 caracteres). Sem ela, a API só aceita acesso do próprio PC. |
+| `PAINEL_ORIGENS` | Sites que podem usar a API, separados por vírgula. Já vem com `https://pedroa07.github.io`. Endereços `localhost` sempre podem. |
+| `GIST_ID`, `GIST_TOKEN` | Guardam a configuração num Gist em vez da pasta `dados/`. |
+| `MANTER_ACORDADO` | `1` = acessa o próprio endereço a cada 10 min. Usa `URL_PUBLICA` ou, na Render, o `RENDER_EXTERNAL_URL`. |
+| `PAINEL_PORTA` | Porta da API no PC (padrão 3000). Na hospedagem vale a `PORT` que ela define. `0` desliga a API. |
+| `SO_PAINEL` | `1` = esta cópia só serve a API e não responde aos botões (veja abaixo). |
+
+## Bom saber
+
+- Não rode duas cópias normais com o mesmo token ao mesmo tempo, senão as duas respondem aos botões. Se o bot de verdade está na Render e você quer mexer pelo PC, use `SO_PAINEL=1` na cópia do PC.
+- O bot **nunca** dá por botão um cargo com permissão de moderação/admin, nem cargo de bot.
+- Cada botão guarda o ID do cargo, então painel antigo continua funcionando mesmo se a configuração se perder.
+- Depois de salvar, confira o quadro **Hierarquia de cargos** na interface: o cargo do bot precisa ficar acima dos cargos de cor, e os cargos de cor acima dos outros cargos que têm cor.
+- O Discord só tem 4 cores de botão (cinza, azul, verde e vermelho). Quem pinta o nome é o cargo.
+- `#000000` no Discord é "sem cor". Pra preto use `#010101`.
+- Limites do Discord: até 24 cores e 5 linhas de botões.
+- Na Render grátis, o primeiro acesso depois de um tempo parado pode demorar cerca de 1 minuto.

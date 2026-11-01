@@ -1,0 +1,25 @@
+# Blueprint da Render: https://render.com/deploy?repo=https://github.com/PedroA07/Manda-Chuva-BOT
+# Os campos com "sync: false" a Render pergunta na hora de criar (não ficam no GitHub).
+services:
+  - type: web
+    name: manda-chuva-bot
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /saude
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: PAINEL_SENHA
+        sync: false
+      - key: GIST_ID
+        sync: false
+      - key: GIST_TOKEN
+        sync: false
+      - key: PAINEL_ORIGENS
+        value: https://pedroa07.github.io
+      - key: MANTER_ACORDADO
+        value: "1"
