@@ -59,6 +59,7 @@ export let client = new Client({ intents: INTENTS });
 let soPainel = false;
 const temMembros = () => client.options.intents.has(I.GuildMembers);
 
+const NO_AR_DESDE = new Date().toISOString(); // /saude: confere se o deploy novo já subiu
 const comStatus = (status, mensagem) => Object.assign(new Error(mensagem), { status });
 const hexParaInt = (hex) => parseInt(hex.slice(1), 16);
 const intParaHex = (n) => `#${n.toString(16).padStart(6, '0').toUpperCase()}`;
@@ -721,7 +722,7 @@ async function donoDoBot() {
 
 // A API (api.js) só conversa com o bot por aqui
 export const api = {
-  saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline' }),
+  saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE }),
 
   async estado(servidorId) {
     const cfg = dados.config();
@@ -894,6 +895,9 @@ function prepararCliente(c) {
     console.log(`🔗 Link para adicionar o bot a um servidor:\n${pronto.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES })}`);
     const cfg = dados.config();
     if (!cfg.servidorId && pronto.guilds.cache.size === 1) dados.salvarConfig({ ...cfg, servidorId: pronto.guilds.cache.firstKey() ?? null });
+    // Comandos sempre na versão deste código (uma atualização pode ter mudado o /aniversario, por exemplo)
+    const guild = servidor();
+    if (guild && !soPainel) await registrarComandos(guild);
     // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
     setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
     if (!soPainel) {
