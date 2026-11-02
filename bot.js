@@ -16,11 +16,12 @@ import {
 } from 'discord.js';
 import * as dados from './dados.js';
 import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
-import { aniversariantesDoDia, lerAniversarios, lerData, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
+import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
+import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
 import { midia, PADROES } from './lib/imagens.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
@@ -149,11 +150,17 @@ async function responderInteracao(interacao) {
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
-  const niverCmd = interacao.isChatInputCommand() && interacao.commandName === 'aniversario';
+  const niverCmd = interacao.isChatInputCommand() && ['aniversario', 'aniversario-apagar'].includes(interacao.commandName);
   if (niverForm || niverCmd) {
     try {
       await interacao.deferReply({ flags: MessageFlags.Ephemeral });
-      await cadastrarNiver(interacao, niverForm ? interacao.fields.getTextInputValue('data') : interacao.options.getString('data', true));
+      if (niverCmd && interacao.commandName === 'aniversario-apagar') {
+        await tirarAniversario(interacao.user.id);
+        await interacao.editReply('Tirei seu aniversário da lista.');
+      } else {
+        const campo = niverForm ? (id) => interacao.fields.getTextInputValue(id) : (id) => interacao.options.getInteger(id);
+        await cadastrarNiver(interacao, { dia: campo('dia'), mes: campo('mes'), ano: campo('ano') });
+      }
     } catch (erro) {
       console.error('Erro no cadastro de aniversário:', erro);
     }
@@ -253,11 +260,15 @@ export function comandos(cfg = dados.config()) {
         o.setName('cor').setDescription('Qual cor?').setRequired(true).addChoices(...escolhas, { name: '❌ Tirar a cor', value: REMOVER }),
       )
       .toJSON(),
+    // Data em blocos: dia DD, mês MM e ano AAAA (opcional)
     new SlashCommandBuilder()
       .setName('aniversario')
-      .setDescription('Cadastra o seu aniversário (o ano é opcional)')
-      .addStringOption((o) => o.setName('data').setDescription('Tipo 14/05/2003 ou 14/05. Pra tirar da lista: apagar').setRequired(true).setMaxLength(10))
+      .setDescription('Cadastra o seu aniversário: dia, mês e ano (o ano é opcional)')
+      .addIntegerOption((o) => o.setName('dia').setDescription('Dia em que você nasceu (DD), tipo 14').setRequired(true).setMinValue(1).setMaxValue(31))
+      .addIntegerOption((o) => o.setName('mes').setDescription('Mês (MM), tipo 05').setRequired(true).setMinValue(1).setMaxValue(12))
+      .addIntegerOption((o) => o.setName('ano').setDescription('Ano (AAAA), tipo 2003. Opcional: sem ano a mensagem sai sem idade').setMinValue(1900).setMaxValue(hojeNoBrasil().ano))
       .toJSON(),
+    new SlashCommandBuilder().setName('aniversario-apagar').setDescription('Tira o seu aniversário da lista').toJSON(),
   ];
 }
 
@@ -308,21 +319,95 @@ async function sincronizarCargos(guild, cfg, rel) {
   }
 }
 
+// ---------- Fotos de perfil (painel) ----------
+const semFoto = new Set(); // contas apagadas: não busca de novo
+
+/**
+ * Nome atual e foto de cada pessoa da lista. Quem não está no cache é buscado uma vez (até 25 por vez,
+ * pra não travar o painel); o discord.js guarda no cache e na próxima já vem.
+ */
+async function comFoto(guild, lista) {
+  const faltam = lista.filter((p) => !guild.members.cache.has(p.userId) && !client.users.cache.has(p.userId) && !semFoto.has(p.userId)).slice(0, 25);
+  await Promise.all(faltam.map((p) => client.users.fetch(p.userId).catch(() => semFoto.add(p.userId))));
+  return lista.map((p) => {
+    const quem = guild.members.cache.get(p.userId) ?? client.users.cache.get(p.userId);
+    return { ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome, avatar: quem?.displayAvatarURL({ size: 64 }) ?? null };
+  });
+}
+
+// ---------- Hierarquia (aba Cargos) ----------
+/** Cargos do servidor do jeito que o lib/hierarquia.js entende (sem o @everyone) */
+function descreverCargos(guild) {
+  return guild.roles.cache
+    .filter((r) => r.id !== guild.id)
+    .map((r) => ({
+      id: r.id,
+      nome: r.name,
+      posicao: r.position,
+      cor: r.colors.primaryColor,
+      bits: r.permissions.bitfield,
+      hoist: r.hoist,
+      mencionavel: r.mentionable,
+      gerenciado: !r.managed ? null : r.tags?.botId ? 'bot' : r.tags?.premiumSubscriberRole ? 'impulso' : 'integracao',
+      membros: temMembros() ? r.members.size : null,
+    }));
+}
+
+/** Das permissões do painel, as que o bot tem (só dá pra dar o que ele mesmo tem) */
+const permsDoBot = (eu) => PERMS.filter(([, b]) => eu?.permissions.has(b));
+
+/**
+ * Aplica a hierarquia editada no painel ({ lista, apagar }). Sem edição, só junta os cargos de cor
+ * num bloco na ordem da aba Cores (cor nova entra no bloco em vez de ficar lá embaixo).
+ */
+async function aplicarHierarquia(guild, cfg, editada, rel) {
+  const eu = guild.members.me;
+  if (!eu?.permissions.has(P.ManageRoles)) {
+    if (editada) rel.push('⚠️ Não mexi na hierarquia: estou sem a permissão "Gerenciar cargos".');
+    return;
+  }
+  const motivo = 'Painel: hierarquia de cargos';
+  const tentar = (promessa, ok, nome) => promessa.then(ok, (erro) => rel.push(`⚠️ ${nome}: ${explicarErro(erro)}`));
+  try {
+    await guild.roles.fetch();
+    const plano = planejarHierarquia({
+      atual: descreverCargos(guild),
+      editada,
+      botId: eu.roles.highest.id,
+      idsDeCor: cfg.cores.map((c) => c.cargoId).filter(Boolean),
+      permsDoBot: permsDoBot(eu).reduce((s, [, b]) => s | b, 0n),
+    });
+    rel.push(...plano.avisos);
+    for (const id of plano.apagar) {
+      const nome = guild.roles.cache.get(id)?.name ?? id;
+      await tentar(guild.roles.delete(id, motivo), () => rel.push(`Cargo apagado: ${nome}`), nome);
+    }
+    for (const e of plano.editar) await tentar(guild.roles.edit(e.id, { ...e.dados, reason: motivo }), () => rel.push(`Cargo atualizado: ${e.nome}`), e.nome);
+    const criados = new Map();
+    for (const c of plano.criar) {
+      await tentar(guild.roles.create({ ...c.dados, reason: motivo }), (r) => { criados.set(c.chave, r.id); rel.push(`Cargo criado: ${c.nome}`); }, c.nome);
+    }
+    if (plano.criar.length || plano.apagar.length) await guild.roles.fetch();
+    const pos = posicoes(plano.ordem.map((id) => criados.get(id) ?? id), descreverCargos(guild));
+    if (pos.length) {
+      await guild.roles.setPositions(pos.map((p) => ({ role: p.id, position: p.position })));
+      rel.push('Ordem dos cargos atualizada.');
+    }
+  } catch (erro) {
+    rel.push(`⚠️ Hierarquia: ${explicarErro(erro)}`);
+  }
+}
+
 // ---------- Aniversários ----------
 const NOME_CARGO_NIVER = 'Aniversariante do dia';
 const DIA = 24 * 60 * 60 * 1000;
 
-/** Cadastra pelo /aniversario ou pelo formulário do botão do painel */
-async function cadastrarNiver(interacao, texto) {
-  const t = String(texto ?? '').trim().toLowerCase();
-  if (['apagar', 'remover', 'tirar'].includes(t)) {
-    await tirarAniversario(interacao.user.id);
-    return interacao.editReply('Tirei seu aniversário da lista.');
-  }
-  const lida = lerData(texto, hojeNoBrasil());
+/** Cadastra pelo /aniversario ou pelo formulário do botão do painel. blocos = { dia, mes, ano } */
+async function cadastrarNiver(interacao, blocos) {
+  const lida = lerDataEmBlocos(blocos, hojeNoBrasil());
   if (lida.erro) return interacao.editReply(`⚠️ ${lida.erro}`);
   await salvarAniversario({ userId: interacao.user.id, nome: interacao.member.displayName, d: lida.d, ano: lida.ano });
-  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario apagar\`.`);
+  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario-apagar\`.`);
 }
 
 const formularioNiver = () =>
@@ -330,11 +415,16 @@ const formularioNiver = () =>
     .setCustomId('niver:modal')
     .setTitle('Seu aniversário')
     .addLabelComponents(
-      new LabelBuilder()
-        .setLabel('Dia e mês (o ano é opcional)')
-        .setDescription('Tipo 14/05/2003 ou 14/05. Sem ano, a mensagem sai sem idade.')
-        .setTextInputComponent(new TextInputBuilder().setCustomId('data').setStyle(TextInputStyle.Short).setPlaceholder('14/05/2003').setRequired(true).setMaxLength(10)),
+      bloco('dia', 'Dia (DD)', '14', 2, true),
+      bloco('mes', 'Mês (MM)', '05', 2, true),
+      bloco('ano', 'Ano (AAAA)', '2003', 4, false).setDescription('Opcional. Sem ano, a mensagem sai sem idade.'),
     );
+
+/** Campo do formulário de aniversário: um bloco da data */
+function bloco(id, rotulo, exemplo, tamanho, obrigatorio) {
+  const campo = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setPlaceholder(exemplo).setRequired(obrigatorio).setMinLength(obrigatorio ? 1 : 0).setMaxLength(tamanho);
+  return new LabelBuilder().setLabel(rotulo).setTextInputComponent(campo);
+}
 
 /** Cargo "Aniversariante do dia" (cria se não existe) */
 async function cargoAniversariante(guild) {
@@ -543,6 +633,9 @@ function infoServidor(guild) {
       acimaDoBot: deCor.filter((r) => !r.editable).map((r) => r.name),
       coloridosAcima,
       semCargo: cores.length - deCor.length,
+      // Aba Cargos: a lista de cima pra baixo (cores num bloco só) e as permissões que o bot consegue dar
+      lista: listaDaHierarquia(descreverCargos(guild), { botId: eu?.roles.highest.id ?? null, idsDeCor: deCor.map((r) => r.id) }),
+      permsDoBot: permsDoBot(eu).map(([k]) => k),
     },
   };
 }
@@ -630,7 +723,7 @@ async function donoDoBot() {
 export const api = {
   saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline' }),
 
-  estado(servidorId) {
+  async estado(servidorId) {
     const cfg = dados.config();
     const guild = servidor(servidorId || cfg.servidorId);
     const user = client.isReady() ? client.user : null;
@@ -644,7 +737,7 @@ export const api = {
       servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name })) : [],
       servidor: guild ? infoServidor(guild) : null,
       noticias: NOVIDADES,
-      aniversarios: guild ? lerAniversarios().map((p) => ({ ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome })) : [],
+      aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -659,13 +752,15 @@ export const api = {
 
   async salvar(entrada) {
     const { cfg, erros } = dados.normalizar(entrada);
-    erros.push(...errosDoPainel(cfg));
+    erros.push(...errosDoPainel(cfg), ...errosDaHierarquia(entrada?.hierarquia));
     if (erros.length) throw comStatus(400, erros.join('\n'));
     const antes = dados.config().servidorId;
     const rel = [];
     const guild = servidor(cfg.servidorId);
-    if (guild) await sincronizarCargos(guild, cfg, rel);
-    else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
+    if (guild) {
+      await sincronizarCargos(guild, cfg, rel);
+      await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
+    } else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
     dados.salvarConfig(cfg);
     if (guild) {
       await atualizarPaineis(guild, rel);
