@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { PALAVROES } from './lib/automod.js';
 
 // DADOS_PASTA troca a pasta (os testes usam uma temporária)
 const PASTA = process.env.DADOS_PASTA ? pathToFileURL(resolve(process.env.DADOS_PASTA) + sep) : new URL('./dados/', import.meta.url);
@@ -87,6 +88,7 @@ PADRAO.moderacao = {
     mencoes: { on: false, acao: 'silenciar' },
     links: { on: false, acao: 'apagar' },
   },
+  palavras: PALAVROES,
 };
 export const ACOES_AUTOMOD = ['apagar', 'avisar', 'silenciar', 'expulsar'];
 export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
@@ -323,6 +325,8 @@ const SECOES = {
       expulsar: limite(m.expulsar, p.expulsar),
       canalId: typeof m.canalId === 'string' && ID.test(m.canalId) ? m.canalId : null,
       automod,
+      // Filtro de palavrões: minúsculas, sem repetir, até 1000 de até 60 letras (limites do Discord)
+      palavras: Array.isArray(m.palavras) ? [...new Set(m.palavras.map((x) => txt(x, 60).toLowerCase()).filter(Boolean))].slice(0, 1000) : [...p.palavras],
     };
   },
 };
