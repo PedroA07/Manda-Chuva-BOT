@@ -38,7 +38,22 @@ export const PADRAO = {
   mensagens: { ganhou: 'Pronto! Agora você é {cor}.', removeu: 'Tirei {cor} de você.' },
   // Jornal do Campus: anuncia as versões novas do bot. Desligado até alguém escolher o canal.
   noticias: { on: false, canalId: null, mencao: '', quais: 'todas', imgs: { topo: '', mini: '', imagem: '', finais: [] } },
+  // Portaria: mensagem quando alguém entra, sai ou leva punição. Tudo desligado até escolherem o canal.
+  portaria: {
+    entrada: {
+      on: false, canalId: null, titulo: 'Bem-vindo(a) ao campus!', textoPos: 'fora', cor: '#F2C14E', dm: false,
+      msg: 'Para nossa alegria, {usuario} acabou de chegar no **{servidor}**! 🎉\nPega sua cor em #escolha-sua-cor e se apresenta.',
+      cargoAuto: { on: false, cargoId: null },
+      card: { on: true, bg: '', cima: 'BEM-VINDO(A) AO CAMPUS', baixo: 'Membro nº {numero}', layout: 'centro', forma: 'circulo', texto: '#FFFFFF', borda: '#F2C14E' },
+    },
+    saida: { on: false, canalId: null, titulo: 'Matrícula trancada', textoPos: 'fora', cor: '#95A5A6', dm: false, msg: '{usuario} trancou a matrícula. A turma agora tem {numero} alunos.' },
+    expulsao: { on: false, canalId: null, titulo: 'Expulsão', textoPos: 'fora', cor: '#E67E22', dm: true, mod: true, motivo: true, msg: '{usuario} foi pra diretoria e não volta hoje.' },
+    ban: { on: false, canalId: null, titulo: 'Banimento', textoPos: 'fora', cor: '#C4363C', dm: true, mod: true, motivo: true, msg: '{usuario} foi **JUBILADO(A)** do {servidor}. Não volta nem com recurso.' },
+    silencio: { on: false, canalId: null, titulo: 'Silenciado', textoPos: 'dentro', cor: '#3498DB', dm: true, mod: true, motivo: true, duracao: '1h', msg: 'Shhh, biblioteca! {usuario} ficou em silêncio por {tempo}.' },
+  },
 };
+export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
+export const DURACOES = ['10min', '1h', '1d', '7d', 'sem'];
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const txt = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
@@ -160,6 +175,45 @@ const SECOES = {
       quais: n.quais === 'grandes' ? 'grandes' : 'todas',
       imgs: imagens(n.imgs, erros, 'Notícias'),
     };
+  },
+
+  portaria(bruto, _atual, erros) {
+    const p = obj(bruto);
+    const sim = (v, padrao) => (typeof v === 'boolean' ? v : padrao);
+    const id = (v) => (typeof v === 'string' && ID.test(v) ? v : null);
+    const cor = (v, padrao) => (typeof v === 'string' && HEX.test(v.trim()) ? hex(v) : padrao);
+    return Object.fromEntries(
+      Object.entries(PADRAO.portaria).map(([tipo, padrao]) => {
+        const e = obj(p[tipo]);
+        const ev = {
+          on: sim(e.on, padrao.on),
+          canalId: id(e.canalId),
+          titulo: typeof e.titulo === 'string' ? txt(e.titulo, 256) : padrao.titulo,
+          msg: txt(e.msg, 2000) || padrao.msg,
+          textoPos: ['fora', 'dentro'].includes(e.textoPos) ? e.textoPos : padrao.textoPos,
+          cor: cor(e.cor, padrao.cor),
+          dm: sim(e.dm, padrao.dm),
+          imgs: imagens(e.imgs, erros, EVENTOS[tipo]),
+        };
+        if ('mod' in padrao) Object.assign(ev, { mod: sim(e.mod, padrao.mod), motivo: sim(e.motivo, padrao.motivo) });
+        if ('duracao' in padrao) ev.duracao = DURACOES.includes(e.duracao) ? e.duracao : padrao.duracao;
+        if (tipo === 'entrada') {
+          const ca = obj(e.cargoAuto), c = obj(e.card), pc = padrao.card;
+          ev.cargoAuto = { on: ca.on === true, cargoId: id(ca.cargoId) };
+          ev.card = {
+            on: sim(c.on, pc.on),
+            bg: imagem(c.bg, 'Fundo do card', erros),
+            cima: typeof c.cima === 'string' ? txt(c.cima, 100) : pc.cima,
+            baixo: typeof c.baixo === 'string' ? txt(c.baixo, 100) : pc.baixo,
+            layout: c.layout === 'lado' ? 'lado' : 'centro',
+            forma: c.forma === 'quadrado' ? 'quadrado' : 'circulo',
+            texto: cor(c.texto, pc.texto),
+            borda: cor(c.borda, pc.borda),
+          };
+        }
+        return [tipo, ev];
+      }),
+    );
   },
 };
 
