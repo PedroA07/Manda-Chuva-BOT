@@ -19,6 +19,7 @@ import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
 import { NOVIDADES } from './lib/novidades.js';
 import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel.js';
+import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -167,24 +168,33 @@ async function bolinhasDoPainel(cfg) {
 }
 
 /**
- * Converte as imagens da config em URLs pra mensagem. Imagem enviada pelo painel vai como arquivo junto
- * (attachment://). arquivos() devolve só os que a mensagem usou.
- * @param {object} imgs as imagens daquela mensagem (pra carregar os anexos antes)
+ * Converte as imagens da config em URLs pra mensagem. Vão como arquivo junto (attachment://): imagem enviada pelo
+ * painel e banner "Eventos" (a placa é desenhada aqui com o nome do servidor). arquivos() devolve só os que a mensagem usou.
+ * @param {object} imgs as imagens daquela mensagem (pra preparar antes)
+ * @param {import('discord.js').Guild} [guild] dá o nome do servidor pras placas
  */
-async function imagensDaMensagem(imgs) {
+async function imagensDaMensagem(imgs, guild) {
   const carregados = new Map();
   for (const id of refsDeAnexo(imgs)) {
     const a = await lerAnexo(id).catch((erro) => console.error(`Não consegui ler a imagem ${id}:`, erro.message));
-    if (a) carregados.set(id, { attachment: a.buffer, name: `anexo-${id}.${a.ext}` });
+    if (a) carregados.set(`anexo:${id}`, { attachment: a.buffer, name: `anexo-${id}.${a.ext}` });
+  }
+  for (const ref of Object.values(imgs ?? {}).flat()) {
+    const evento = eventoDaPlaca(ref);
+    if (!evento || carregados.has(ref)) continue;
+    const png = await placaPronta(evento, guild?.name ?? 'SEU SERVIDOR').catch((erro) => console.error(`Não consegui desenhar a placa ${evento}:`, erro.message));
+    if (png) carregados.set(ref, { attachment: png, name: `placa-${evento}.jpg` });
   }
   const usados = new Map();
   const url = (ref, padrao) => {
+    const r = ref || padrao;
+    const arquivo = carregados.get(r);
+    if (arquivo) {
+      usados.set(r, arquivo);
+      return `attachment://${arquivo.name}`;
+    }
     const m = midia(ref, padrao);
-    if (!m || 'url' in m) return m?.url ?? null;
-    const arquivo = carregados.get(m.anexo);
-    if (!arquivo) return null;
-    usados.set(m.anexo, arquivo);
-    return `attachment://${arquivo.name}`;
+    return m && 'url' in m ? m.url : null;
   };
   return { url, arquivos: () => [...usados.values()] };
 }
@@ -193,7 +203,7 @@ async function imagensDaMensagem(imgs) {
 export async function montarMensagem(guild, cfg = dados.config()) {
   // Menção de cargo aparece com a cor do cargo; allowedMentions vazio garante que não marca ninguém
   const mencao = (cor) => (cor.cargoId && guild.roles.cache.has(cor.cargoId) ? `<@&${cor.cargoId}>` : `**${cor.nome}**`);
-  const { url, arquivos } = await imagensDaMensagem(cfg.painel.imgs);
+  const { url, arquivos } = await imagensDaMensagem(cfg.painel.imgs, guild);
   const pedaco = pedacoDoPainel(cfg, { mencao, bolinhas: await bolinhasDoPainel(cfg), url });
   return montarV2({ ...pedaco, arquivos: arquivos() });
 }
@@ -277,7 +287,7 @@ async function anunciarNovidades() {
   try {
     const { postar, marcar } = paraAnunciar(NOVIDADES, [...vistas], n.quais);
     for (const noticia of postar) {
-      const { url, arquivos } = await imagensDaMensagem(n.imgs);
+      const { url, arquivos } = await imagensDaMensagem(n.imgs, guild);
       await canal.send(montarV2({ ...pedacoDaNoticia(noticia, n, { url }), arquivos: arquivos() }));
       vistas.add(noticia.versao);
       postadas.push(noticia.versao);
@@ -443,6 +453,12 @@ export const api = {
   // Imagem enviada pelo painel ("Anexar"): guarda e devolve a referência pra pôr na config
   anexo: (corpo) => salvarAnexo(corpo),
   lerAnexo: (id) => lerAnexo(id),
+
+  // Banner "Eventos" com a placa e o nome do servidor escolhido (o painel mostra daqui)
+  async placa(evento) {
+    if (!eventoDaPlaca(`banners/eventos/${evento}.jpg`)) return null;
+    return placaPronta(evento, servidor()?.name ?? 'SEU SERVIDOR');
+  },
 
   async enviar(canalId) {
     const guild = servidor();

@@ -56,6 +56,15 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
         return res.end(a.buffer);
       }
 
+      // Banners "Eventos" com a placa desenhada pelo bot (nome do servidor de verdade)
+      const placa = req.method === 'GET' && /^\/placas\/([a-z]+)\.jpg$/.exec(url.pathname);
+      if (placa) {
+        const jpg = await api.placa?.(placa[1]);
+        if (!jpg) return responder(res, 404, { erro: 'Placa não encontrada.' });
+        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=3600' });
+        return res.end(jpg);
+      }
+
       const rota = rotas[`${req.method} ${url.pathname}`];
       if (!rota) return responder(res, 404, { erro: 'Não encontrado.' });
       if (origem && !permitida(origem)) return responder(res, 403, { erro: `O site ${origem} não está no PAINEL_ORIGENS do bot.` });

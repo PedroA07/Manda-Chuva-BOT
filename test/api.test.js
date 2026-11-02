@@ -35,6 +35,16 @@ test('upload de anexo aceita corpo maior que 1 MB', async (t) => {
   assert.equal(recebido.base64.length, base64.length);
 });
 
+test('placa dos banners de evento é pública e vem em JPEG', async (t) => {
+  const jpg = Buffer.from([0xff, 0xd8, 0xff]);
+  const { servidor, base } = await subir({ saude: () => ({}), placa: async (ev) => (ev === 'entrada' ? jpg : null) });
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/placas/entrada.jpg`);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'image/jpeg');
+  assert.equal((await fetch(`${base}/placas/nada.jpg`)).status, 404);
+});
+
 test('/saude mostra a versão do bot', async (t) => {
   const { servidor, base } = await subir({ saude: () => ({ ok: true, bot: 'offline' }) });
   t.after(() => servidor.close());

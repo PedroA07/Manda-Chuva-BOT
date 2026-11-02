@@ -3,6 +3,7 @@
 import { iniciarApi } from './api.js';
 import { api, iniciarBot } from './bot.js';
 import { carregar } from './dados.js';
+import { migrar } from './lib/migracoes.js';
 
 // Lê o .env. Se a hospedagem já define as variáveis, o arquivo nem precisa existir.
 try {
@@ -13,6 +14,8 @@ process.on('unhandledRejection', (erro) => console.error('Erro não tratado:', e
 
 try {
   await carregar();
+  const novas = await migrar();
+  if (novas.length) console.log(`🎨 Cores do redesign acrescentadas: ${novas.join(', ')} (o cargo é criado quando salvar o painel)`);
 } catch (erro) {
   console.error('❌ Não consegui carregar a configuração:', erro.message);
   process.exit(1);
