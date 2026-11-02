@@ -70,6 +70,11 @@ export const PADRAO = {
   },
 };
 const MENSAGENS = ['painel', 'entrada', 'saida', 'expulsao', 'ban', 'silencio', 'news'];
+// Aniversários (lib/aniversarios.js): mensagem com card no dia, cargo por 24 h, DM e botão no painel de cores
+PADRAO.niver = {
+  on: false, canalId: null, hora: '09:00', msg: 'Hoje é aniversário de {usuario}! {idade} anos e ainda não trancou o curso. Parabéns!',
+  topo: 'PARABÉNS!', baixo: '{idade} ANOS DE PURA RESENHA', fundo: '', idade: true, cargo: true, dm: false, botao: true,
+};
 export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
 export const DURACOES = ['10min', '1h', '1d', '7d', 'sem'];
 
@@ -271,6 +276,24 @@ const SECOES = {
     // Data festiva da lista padrão nunca some (só os avisos personalizados podem ser apagados)
     for (const p of PADRAO.temas.lista) if (!vistos.has(p.id)) lista.push(structuredClone(p));
     return { auto: t.auto !== false, respeitar: t.respeitar !== false, lista };
+  },
+
+  niver(bruto, _atual, erros) {
+    const n = obj(bruto), p = PADRAO.niver;
+    const sim = (v, padrao) => (typeof v === 'boolean' ? v : padrao);
+    return {
+      on: sim(n.on, p.on),
+      canalId: typeof n.canalId === 'string' && ID.test(n.canalId) ? n.canalId : null,
+      hora: typeof n.hora === 'string' && /^([01]\d|2[0-3]):00$/.test(n.hora) ? n.hora : p.hora,
+      msg: txt(n.msg, 2000) || p.msg,
+      topo: typeof n.topo === 'string' ? txt(n.topo, 60) : p.topo,
+      baixo: typeof n.baixo === 'string' ? txt(n.baixo, 60) : p.baixo,
+      fundo: imagem(n.fundo, 'Fundo do card de aniversário', erros),
+      idade: sim(n.idade, p.idade),
+      cargo: sim(n.cargo, p.cargo),
+      dm: sim(n.dm, p.dm),
+      botao: sim(n.botao, p.botao),
+    };
   },
 };
 
