@@ -78,4 +78,6 @@ test('config da moderação: padrão e limites', () => {
   assert.equal(md.automod.spam.on, false);
   const errado = dados.normalizar({ moderacao: { silenciar: 99, expulsar: -1, canalId: 'x', automod: { spam: { on: true, acao: 'explodir' } } } }, {}).cfg.moderacao;
   assert.deepEqual([errado.silenciar, errado.expulsar, errado.canalId, errado.automod.spam], [20, 0, null, { on: true, acao: 'silenciar' }]);
+  assert.ok(md.palavras.includes('porra'));
+  assert.deepEqual(dados.normalizar({ moderacao: { palavras: [' Porra ', 'porra', '', 'x'.repeat(70)] } }, {}).cfg.moderacao.palavras, ['porra', 'x'.repeat(60)]);
 });

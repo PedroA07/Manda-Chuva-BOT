@@ -1,5 +1,6 @@
 // Lógica do bot: cargos de cor, botões, comando /cor e as ações usadas pelo painel web
 import {
+  AutoModerationActionType,
   ChannelType,
   Client,
   Events,
@@ -16,6 +17,7 @@ import {
 } from 'discord.js';
 import * as dados from './dados.js';
 import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
+import { contarSpam, NATIVAS, NOMES, oqueDoAutomod, regraDoDiscord } from './lib/automod.js';
 import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
@@ -49,6 +51,8 @@ const NOMES_MODERACAO = [
   [P.KickMembers, 'Expulsar membros'],
   [P.ModerateMembers, 'Silenciar membros'],
   [P.BanMembers, 'Banir membros'],
+  [P.ManageGuild, 'Gerenciar servidor (auto-moderação)'],
+  [P.ManageMessages, 'Gerenciar mensagens (anti-spam)'],
 ];
 export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO].map(([p]) => p);
 
@@ -58,8 +62,9 @@ const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChanne
 
 // Guilds = servidores, cargos e canais; Expressions = emojis do servidor; GuildModeration = bans e registro de
 // auditoria (portaria); GuildMembers (privilegiada) = quem entra/sai e quem tem cada cor. Sem ela liberada no portal,
-// o bot conecta sem (lib/conexao.js).
-const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers];
+// o bot conecta sem (lib/conexao.js). GuildMessages = anti-spam (conta mensagens, não lê o texto);
+// AutoModerationExecution = quando a AutoMod do Discord barra alguém (pra avisar/expulsar e anotar no livro).
+const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.AutoModerationExecution];
 
 // Trocado no iniciarBot pelo cliente conectado (export let: quem importa vê o novo)
 export let client = new Client({ intents: INTENTS });
@@ -411,8 +416,13 @@ async function avisar(guild, membro, motivo, por) {
   const conta = `${qtd}${regras.expulsar ? `/${regras.expulsar}` : ''}`;
   await registrar(guild, anotar({ tipo: TIPOS.aviso, userId: membro.id, nome: membro.displayName, oque: `levou um aviso${motivo ? `: ${motivo}` : ''} (${conta})`, por, desfazer: `aviso:${a.id}` }));
   await membro.send(`⚠️ Você levou um aviso no servidor **${guild.name}**${motivo ? `: ${motivo}` : ''}. Avisos valendo: ${conta}. Cada aviso some depois de 30 dias.`).catch(() => {});
+  return (await depoisDoAviso(guild, membro, qtd, conta)) ?? `${membro.displayName} levou um aviso (${conta}).`;
+}
+
+/** Chegou no limite de avisos: silencia 1 h ou expulsa. Devolve o texto pro painel (null = nada aconteceu). */
+async function depoisDoAviso(guild, membro, qtd, conta) {
   // O aviso já valeu; se a consequência falhar, o painel conta as duas coisas
-  const c = consequencia(qtd, regras);
+  const c = consequencia(qtd, dados.config().moderacao);
   try {
     if (c === 'expulsar' && membro.kickable) {
       await expulsar(guild, membro, `Juntou ${qtd} avisos`, 'automático');
@@ -425,7 +435,116 @@ async function avisar(guild, membro, motivo, por) {
   } catch (erro) {
     return `${membro.displayName} levou o aviso ${conta}, mas não consegui ${c === 'expulsar' ? 'expulsar' : 'silenciar'}: ${erro.message}`;
   }
-  return `${membro.displayName} levou um aviso (${conta}).`;
+  return null;
+}
+
+// ---------- Auto-moderação ----------
+/** Depois que a mensagem foi barrada: anota no livro e avisa, silencia ou expulsa conforme a regra */
+async function punirPeloAutomod(guild, membro, tipo, acao, n) {
+  let desfazer = null;
+  if (acao === 'avisar') desfazer = `aviso:${darAviso({ userId: membro.id, nome: membro.displayName, motivo: `auto-mod: ${NOMES[tipo]}`, por: 'auto-mod' }).id}`;
+  if (acao === 'silenciar') {
+    desfazer = 'silencio';
+    // Nas regras do Discord o castigo de 10 min já vem junto; no anti-spam quem dá é o bot
+    if (tipo === 'spam' && membro.moderatable) await membro.timeout(600_000, 'Auto-mod: anti-spam').catch((erro) => console.error('Anti-spam:', explicarErro(erro)));
+  }
+  await registrar(guild, anotar({ tipo: TIPOS.automod, userId: membro.id, nome: membro.displayName, oque: oqueDoAutomod(tipo, acao, n), por: `auto-mod · ${NOMES[tipo].toLowerCase()}`, desfazer }));
+  if (acao === 'expulsar' && membro.kickable) await membro.kick(`Auto-mod: ${NOMES[tipo]}`).catch((erro) => console.error('Auto-mod:', explicarErro(erro)));
+  if (acao === 'avisar') {
+    const regras = dados.config().moderacao;
+    const qtd = ativos(lerAvisos(), membro.id).length;
+    await depoisDoAviso(guild, membro, qtd, `${qtd}${regras.expulsar ? `/${regras.expulsar}` : ''}`);
+  }
+}
+
+/** Convites do próprio servidor: liberados na regra de convites */
+async function convitesDaCasa(guild) {
+  const codigos = new Set(guild.vanityURLCode ? [guild.vanityURLCode] : []);
+  const convites = await guild.invites.fetch().catch(() => null);
+  convites?.forEach((c) => codigos.add(c.code));
+  return [...codigos];
+}
+
+/**
+ * Cria, atualiza ou apaga as regras "Manda Chuva · …" na AutoMod do Discord conforme a aba Moderação.
+ * Os ids ficam no registro; só edita quando alguma coisa da regra mudou.
+ */
+async function sincronizarAutomod(guild, cfg, rel) {
+  const am = cfg.moderacao.automod;
+  const antes = lerRegistro().automod ?? {};
+  if (!NATIVAS.some((k) => am[k].on || antes[k])) return;
+  if (!guild.members.me?.permissions.has(P.ManageGuild)) {
+    if (NATIVAS.some((k) => am[k].on)) rel.push('⚠️ Auto-moderação: o bot precisa da permissão "Gerenciar servidor" pra criar as regras.');
+    return;
+  }
+  const motivo = 'Painel: auto-moderação';
+  try {
+    const existentes = await guild.autoModerationRules.fetch();
+    // Moderação não leva bronca do auto-mod (admin o Discord já deixa de fora)
+    const isentos = guild.roles.cache
+      .filter((r) => r.id !== guild.id && !r.permissions.has(P.Administrator) && r.permissions.any([P.ManageMessages, P.ModerateMembers, P.KickMembers, P.BanMembers]))
+      .map((r) => r.id);
+    const convites = am.convites.on ? await convitesDaCasa(guild) : [];
+    const depois = { ...antes };
+    for (const k of NATIVAS) {
+      const atual = antes[k] ? existentes.get(antes[k].id) : undefined;
+      try {
+        const ligar = am[k].on && !(k === 'palavrao' && !cfg.moderacao.palavras.length);
+        if (am[k].on && !ligar) rel.push('⚠️ Filtro de palavrões ligado, mas a lista está vazia: não criei a regra.');
+        if (!ligar) {
+          if (atual) await atual.delete(motivo);
+          delete depois[k];
+          continue;
+        }
+        const regra = regraDoDiscord(k, { acao: am[k].acao, palavras: cfg.moderacao.palavras, convites, isentos });
+        const marca = JSON.stringify(regra);
+        if (atual && antes[k].marca === marca) continue;
+        // O tipo do gatilho não muda depois de criada
+        const { triggerType, ...semGatilho } = regra;
+        const feita = atual ? await atual.edit({ ...semGatilho, reason: motivo }) : await guild.autoModerationRules.create({ ...regra, reason: motivo });
+        depois[k] = { id: feita.id, marca };
+        rel.push(`Auto-mod: ${NOMES[k]} ${atual ? 'atualizado' : 'ligado'}.`);
+      } catch (erro) {
+        rel.push(`⚠️ Auto-mod (${NOMES[k]}): ${explicarErro(erro)}`);
+      }
+    }
+    await salvarRegistro({ automod: depois });
+  } catch (erro) {
+    rel.push(`⚠️ Auto-moderação: ${explicarErro(erro)}`);
+  }
+}
+
+/** A AutoMod do Discord barrou alguém numa regra nossa */
+async function tratarAutomod(ex) {
+  // Cada regra manda um evento por ação: só o de "bloquear mensagem" conta
+  if (ex.action.type !== AutoModerationActionType.BlockMessage) return;
+  const cfg = dados.config();
+  if (soPainel || ex.guild.id !== cfg.servidorId) return;
+  const regras = lerRegistro().automod ?? {};
+  const tipo = NATIVAS.find((k) => regras[k]?.id === ex.ruleId);
+  if (!tipo || !cfg.moderacao.automod[tipo].on) return;
+  const membro = ex.member ?? (await ex.guild.members.fetch(ex.userId).catch(() => null));
+  if (membro) await punirPeloAutomod(ex.guild, membro, tipo, cfg.moderacao.automod[tipo].acao);
+}
+
+// Anti-spam: 5 mensagens em 3 segundos (não precisa ler o texto)
+const janelasSpam = new Map();
+async function contarMensagem(msg) {
+  if (soPainel || !msg.inGuild() || msg.author.bot || msg.webhookId) return;
+  const cfg = dados.config();
+  const regra = cfg.moderacao.automod.spam;
+  if (!regra.on || msg.guildId !== cfg.servidorId) return;
+  const membro = msg.member;
+  if (!membro || membro.id === msg.guild.ownerId || membro.permissions.has(P.ManageMessages)) return;
+  const rajada = contarSpam(janelasSpam, { id: msg.id, canalId: msg.channelId, userId: msg.author.id }, Date.now());
+  if (!rajada) return;
+  const porCanal = new Map();
+  for (const m of rajada) porCanal.set(m.canalId, [...(porCanal.get(m.canalId) ?? []), m.id]);
+  for (const [canalId, ids] of porCanal) {
+    const canal = msg.guild.channels.cache.get(canalId);
+    if (canal?.isTextBased()) await canal.bulkDelete(ids, true).catch((erro) => console.error('Anti-spam:', explicarErro(erro)));
+  }
+  await punirPeloAutomod(msg.guild, membro, 'spam', regra.acao, rajada.length);
 }
 
 /** Ações da aba Membros: dar/tirar cargo, avisar, silenciar, tirar o silêncio e expulsar */
@@ -894,6 +1013,7 @@ export const api = {
     if (guild) {
       await sincronizarCargos(guild, cfg, rel);
       await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
+      await sincronizarAutomod(guild, cfg, rel);
     } else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
     dados.salvarConfig(cfg);
     if (guild) {
@@ -914,7 +1034,7 @@ export const api = {
   lerAnexo: (id) => lerAnexo(id),
 
   // Lista de aniversários: adicionar alguém na mão ou tirar da lista (vale na hora, não espera o Salvar)
-  // Aba Membros: busca, filtro por cargo e página (6 por página). Sem a intent "Server Members", só com busca.
+  // Aba Membros: busca, filtro por cargo e página (o painel escolhe quantos por página). Sem a intent "Server Members", só com busca.
   async membros(params) {
     const guild = servidor();
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
@@ -925,7 +1045,9 @@ export const api = {
     else if (q) membros = [...(await noDiscord(guild.members.search({ query: q.replace(/^@/, ''), limit: 100 }))).values()];
     else return { itens: [], pagina: 1, paginas: 1, total: 0, precisaBusca: true };
     const lista = filtrarMembros(membros.map((m) => ({ m, nome: m.displayName, usuario: m.user.username, cargos: [...m.roles.cache.keys()] })), { q, cargo });
-    const p = pagina(lista, params.get('pagina'));
+    // Quantos por página o painel pediu (de 1 a 100)
+    const por = Math.min(100, Math.max(1, Math.trunc(Number(params.get('por'))) || 6));
+    const p = pagina(lista, params.get('pagina'), por);
     const avisos = lerAvisos();
     return { ...p, itens: p.itens.map((x) => descreverMembro(x.m, avisos)) };
   },
@@ -1068,6 +1190,8 @@ function explicarErro(erro) {
 function prepararCliente(c) {
   // Modo só painel: este processo só mexe no painel; quem responde aos botões é o bot hospedado
   if (!soPainel) c.on(Events.InteractionCreate, responderInteracao);
+  if (!soPainel) c.on(Events.AutoModerationActionExecution, (ex) => tratarAutomod(ex).catch((erro) => console.error('Auto-mod:', erro)));
+  if (!soPainel) c.on(Events.MessageCreate, (msg) => contarMensagem(msg).catch((erro) => console.error('Anti-spam:', erro)));
   if (!soPainel) ligarPortaria(c, postarPortaria);
   c.once(Events.ClientReady, async (pronto) => {
     console.log(`✅ Bot online como ${pronto.user.tag} (versão ${VERSAO})${soPainel ? ' (modo só painel: não responde aos botões)' : ''}`);
