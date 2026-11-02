@@ -12,14 +12,17 @@ import {
 } from 'discord.js';
 import * as dados from './dados.js';
 import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
+import { baixarImagem, desenharCard } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
-import { midia } from './lib/imagens.js';
+import { ligarPortaria } from './lib/eventos.js';
+import { midia, PADROES } from './lib/imagens.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
 import { NOVIDADES } from './lib/novidades.js';
 import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel.js';
 import { eventoDaPlaca, placaPronta } from './lib/placa.js';
+import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -31,6 +34,7 @@ const NOMES_PERMISSOES = [
   [P.AttachFiles, 'Anexar arquivos'],
   [P.ReadMessageHistory, 'Ver histórico de mensagens'],
   [P.ManageRoles, 'Gerenciar cargos'],
+  [P.ViewAuditLog, 'Ver o registro de auditoria'],
 ];
 export const PERMISSOES = NOMES_PERMISSOES.map(([p]) => p);
 
@@ -38,9 +42,10 @@ export const PERMISSOES = NOMES_PERMISSOES.map(([p]) => p);
 const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChannels, P.ManageMessages,
   P.ManageWebhooks, P.KickMembers, P.BanMembers, P.ModerateMembers, P.MentionEveryone];
 
-// Guilds = servidores, cargos e canais; Expressions = emojis do servidor; GuildMembers (privilegiada) = contar
-// quem tem cada cor. Sem ela liberada no portal, o bot conecta sem (lib/conexao.js).
-const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildMembers];
+// Guilds = servidores, cargos e canais; Expressions = emojis do servidor; GuildModeration = bans e registro de
+// auditoria (portaria); GuildMembers (privilegiada) = quem entra/sai e quem tem cada cor. Sem ela liberada no portal,
+// o bot conecta sem (lib/conexao.js).
+const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers];
 
 // Trocado no iniciarBot pelo cliente conectado (export let: quem importa vê o novo)
 export let client = new Client({ intents: INTENTS });
@@ -386,6 +391,7 @@ function infoServidor(guild) {
     emojis: guild.emojis.cache.filter((e) => e.available !== false).map((e) => ({ id: e.id, nome: e.name, animado: e.animated, texto: e.toString() })),
     recursos: { degrade: guild.features.includes(GuildFeature.EnhancedRoleColors) },
     podeMencionarTodos: !!eu?.permissions.has(P.MentionEveryone),
+    membros: guild.memberCount,
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     hierarquia: {
       cargoDoBot: eu?.roles.highest.name ?? '?',
@@ -395,6 +401,81 @@ function infoServidor(guild) {
       semCargo: cores.length - deCor.length,
     },
   };
+}
+
+// ---------- Portaria (entrou, saiu, expulso, banido, silenciado) ----------
+const TEMPOS = { '10min': '10 minutos', '1h': '1 hora', '1d': '1 dia', '7d': '1 semana', sem: 'tempo indeterminado' };
+
+/** Valores das variáveis {usuario}, {servidor}... de um evento */
+function variaveisDoEvento(ev, { guild, user, membro, executorId, motivo, ate }) {
+  return {
+    id: user.id,
+    usuario: `<@${user.id}>`,
+    nome: membro?.displayName ?? user.globalName ?? user.username,
+    servidor: guild.name,
+    numero: String(guild.memberCount),
+    moderador: executorId ? `<@${executorId}>` : 'alguém da staff',
+    motivo: motivo || 'sem motivo',
+    tempo: ate ? duracaoTexto(ate.getTime() - Date.now()) : TEMPOS[ev.duracao ?? '1h'],
+  };
+}
+
+/** Mensagem do evento, com o card desenhado (entrada) e as imagens anexadas */
+async function mensagemDoEvento(tipo, ev, vars, { guild, user }) {
+  const { url, arquivos } = await imagensDaMensagem(ev.imgs, guild);
+  const extras = [];
+  let card;
+  if (tipo === 'entrada' && ev.card.on) {
+    const m = midia(ev.card.bg || PADROES.entrada.card);
+    const fundo = m?.anexo ? (await lerAnexo(m.anexo).catch(() => null))?.buffer : m?.url ? await baixarImagem(m.url) : null;
+    const avatar = await baixarImagem(user.displayAvatarURL({ extension: 'png', size: 256 }));
+    const noCard = { ...vars, usuario: vars.nome };
+    const png = await desenharCard({
+      fundo,
+      avatar,
+      nome: vars.nome,
+      cima: preencher(ev.card.cima, noCard),
+      baixo: preencher(ev.card.baixo, noCard),
+      layout: ev.card.layout,
+      forma: ev.card.forma,
+      corTexto: ev.card.texto,
+      corBorda: ev.card.borda,
+    }).catch((erro) => console.error('Não consegui desenhar o card:', erro.message));
+    if (png) {
+      extras.push({ attachment: png, name: 'card.png' });
+      card = 'attachment://card.png';
+    }
+  }
+  return montarV2({ ...pedacoDoEvento(tipo, ev, vars, { url, card }), arquivos: [...arquivos(), ...extras] });
+}
+
+/** Chamado pelos eventos do Discord (lib/eventos.js) */
+async function postarPortaria(tipo, d) {
+  const cfg = dados.config();
+  const ev = cfg.portaria[tipo];
+  const guild = d.guild;
+  if (soPainel || !ev.on || !ev.canalId || !guild || guild.id !== cfg.servidorId) return;
+  const canal = guild.channels.cache.get(ev.canalId);
+  if (!canal?.isTextBased()) return;
+  const user = d.usuario ?? (await client.users.fetch(d.alvoId).catch(() => null));
+  if (!user) return;
+  const membro = d.membro ?? (tipo === 'silencio' ? await guild.members.fetch(user.id).catch(() => null) : null);
+  const vars = variaveisDoEvento(ev, { guild, user, membro, executorId: d.executorId, motivo: d.motivo, ate: d.ate });
+  const msg = await mensagemDoEvento(tipo, ev, vars, { guild, user });
+  await canal.send(msg);
+  // Na DM ninguém precisa ser marcado
+  if (ev.dm) await user.send({ ...msg, allowedMentions: { parse: [] } }).catch(() => {});
+  if (tipo === 'entrada' && ev.cargoAuto.on && ev.cargoAuto.cargoId && d.membro) {
+    await d.membro.roles.add(ev.cargoAuto.cargoId, 'Cargo automático da portaria').catch((erro) => console.error('Cargo automático:', explicarErro(erro)));
+  }
+}
+
+/** Dono do bot (quem criou a aplicação, ou o dono do time) */
+async function donoDoBot() {
+  const app = await client.application.fetch();
+  const dono = app.owner;
+  if (!dono) return null;
+  return 'ownerId' in dono ? client.users.fetch(dono.ownerId) : dono;
 }
 
 // A API (api.js) só conversa com o bot por aqui
@@ -453,6 +534,26 @@ export const api = {
   // Imagem enviada pelo painel ("Anexar"): guarda e devolve a referência pra pôr na config
   anexo: (corpo) => salvarAnexo(corpo),
   lerAnexo: (id) => lerAnexo(id),
+
+  // "Testar comigo": manda a mensagem do evento (como está salva) na DM do dono do bot, com ele de exemplo
+  async testarPortaria(evento) {
+    const cfg = dados.config();
+    const ev = cfg.portaria[evento];
+    if (!ev) throw comStatus(400, 'Evento desconhecido.');
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const dono = await donoDoBot().catch(() => null);
+    if (!dono) throw comStatus(400, 'Não achei o dono do bot no Discord.');
+    const membro = await guild.members.fetch(dono.id).catch(() => null);
+    const vars = variaveisDoEvento(ev, { guild, user: dono, membro, executorId: client.user.id, motivo: 'teste do painel' });
+    const msg = await mensagemDoEvento(evento, ev, vars, { guild, user: dono });
+    try {
+      await dono.send({ ...msg, allowedMentions: { parse: [] } });
+    } catch (erro) {
+      throw comStatus(400, erro.code === 50007 ? 'Não consegui mandar DM: libere mensagens diretas de membros do servidor.' : explicarErro(erro));
+    }
+    return { ok: true, para: dono.username };
+  },
 
   // Banner "Eventos" com a placa e o nome do servidor escolhido (o painel mostra daqui)
   async placa(evento) {
@@ -522,6 +623,7 @@ function explicarErro(erro) {
 function prepararCliente(c) {
   // Modo só painel: este processo só mexe no painel; quem responde aos botões é o bot hospedado
   if (!soPainel) c.on(Events.InteractionCreate, responderInteracao);
+  if (!soPainel) ligarPortaria(c, postarPortaria);
   c.once(Events.ClientReady, async (pronto) => {
     console.log(`✅ Bot online como ${pronto.user.tag} (versão ${VERSAO})${soPainel ? ' (modo só painel: não responde aos botões)' : ''}`);
     console.log(`🔗 Link para adicionar o bot a um servidor:\n${pronto.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES })}`);

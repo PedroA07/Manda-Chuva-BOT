@@ -64,6 +64,8 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - O Discord só tem 4 cores de botão (cinza, azul, verde e vermelho). Quem pinta o nome é o cargo. Com "cor do cargo" ou "cor própria", o bot põe uma bolinha da cor no botão (emoji da própria aplicação, não gasta os emojis do servidor) e usa o fundo mais parecido.
 - As mensagens usam o layout novo do Discord: banner em cima, caixa colorida, imagens no final e botões. Imagem enviada pelo painel ("Anexar") fica guardada junto da configuração e vai como arquivo na mensagem.
 - Degradê no nome precisa de servidor com impulso. Sem isso, o cargo fica com a primeira cor.
+- **Portaria:** mensagens quando alguém entra (com um card desenhado pelo bot com a foto e o nome), sai, é expulso, banido ou silenciado. Entrou/saiu precisam da **Server Members Intent**. Expulsão, ban e silêncio vêm do registro de auditoria: o cargo do bot precisa de "Ver o registro de auditoria" (sem ela, expulsão aparece como "saiu"). "Testar comigo" manda a mensagem na DM de quem é dono do bot.
+- Banners "Eventos" da galeria: o bot desenha a placa com o nome do seu servidor (rota pública `/placas/<evento>.jpg`).
 - **Jornal do Campus:** a cada versão nova, o bot posta a notícia no canal escolhido na aba Notícias do painel (desligado até você escolher o canal). Na primeira vez ele posta só a mais recente. Pra mencionar @everyone, o cargo do bot precisa da permissão "Mencionar @everyone".
 - `#000000` no Discord é "sem cor". Pra preto use `#010101`.
 - Limites do Discord: até 24 cores, 40 peças e 4000 letras por mensagem (o painel avisa antes de salvar).

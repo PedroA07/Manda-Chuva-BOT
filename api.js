@@ -18,6 +18,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/enviar': (corpo) => api.enviar(corpo?.canalId),
     'POST /api/apagar': (corpo) => api.apagar(corpo?.mensagemId),
     'POST /api/anexo': (corpo) => api.anexo(corpo),
+    'POST /api/portaria/testar': (corpo) => api.testarPortaria(corpo?.evento),
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
   const limites = { 'POST /api/anexo': 12_000_000 };
