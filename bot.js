@@ -16,7 +16,7 @@ import {
 } from 'discord.js';
 import * as dados from './dados.js';
 import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
-import { aniversariantesDoDia, lerAniversarios, lerData, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
+import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
@@ -150,11 +150,17 @@ async function responderInteracao(interacao) {
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
-  const niverCmd = interacao.isChatInputCommand() && interacao.commandName === 'aniversario';
+  const niverCmd = interacao.isChatInputCommand() && ['aniversario', 'aniversario-apagar'].includes(interacao.commandName);
   if (niverForm || niverCmd) {
     try {
       await interacao.deferReply({ flags: MessageFlags.Ephemeral });
-      await cadastrarNiver(interacao, niverForm ? interacao.fields.getTextInputValue('data') : interacao.options.getString('data', true));
+      if (niverCmd && interacao.commandName === 'aniversario-apagar') {
+        await tirarAniversario(interacao.user.id);
+        await interacao.editReply('Tirei seu aniversário da lista.');
+      } else {
+        const campo = niverForm ? (id) => interacao.fields.getTextInputValue(id) : (id) => interacao.options.getInteger(id);
+        await cadastrarNiver(interacao, { dia: campo('dia'), mes: campo('mes'), ano: campo('ano') });
+      }
     } catch (erro) {
       console.error('Erro no cadastro de aniversário:', erro);
     }
@@ -254,11 +260,15 @@ export function comandos(cfg = dados.config()) {
         o.setName('cor').setDescription('Qual cor?').setRequired(true).addChoices(...escolhas, { name: '❌ Tirar a cor', value: REMOVER }),
       )
       .toJSON(),
+    // Data em blocos: dia DD, mês MM e ano AAAA (opcional)
     new SlashCommandBuilder()
       .setName('aniversario')
-      .setDescription('Cadastra o seu aniversário (o ano é opcional)')
-      .addStringOption((o) => o.setName('data').setDescription('Tipo 14/05/2003 ou 14/05. Pra tirar da lista: apagar').setRequired(true).setMaxLength(10))
+      .setDescription('Cadastra o seu aniversário: dia, mês e ano (o ano é opcional)')
+      .addIntegerOption((o) => o.setName('dia').setDescription('Dia em que você nasceu (DD), tipo 14').setRequired(true).setMinValue(1).setMaxValue(31))
+      .addIntegerOption((o) => o.setName('mes').setDescription('Mês (MM), tipo 05').setRequired(true).setMinValue(1).setMaxValue(12))
+      .addIntegerOption((o) => o.setName('ano').setDescription('Ano (AAAA), tipo 2003. Opcional: sem ano a mensagem sai sem idade').setMinValue(1900).setMaxValue(hojeNoBrasil().ano))
       .toJSON(),
+    new SlashCommandBuilder().setName('aniversario-apagar').setDescription('Tira o seu aniversário da lista').toJSON(),
   ];
 }
 
@@ -307,6 +317,22 @@ async function sincronizarCargos(guild, cfg, rel) {
       rel.push(`⚠️ ${cor.nome}: ${explicarErro(erro)}`);
     }
   }
+}
+
+// ---------- Fotos de perfil (painel) ----------
+const semFoto = new Set(); // contas apagadas: não busca de novo
+
+/**
+ * Nome atual e foto de cada pessoa da lista. Quem não está no cache é buscado uma vez (até 25 por vez,
+ * pra não travar o painel); o discord.js guarda no cache e na próxima já vem.
+ */
+async function comFoto(guild, lista) {
+  const faltam = lista.filter((p) => !guild.members.cache.has(p.userId) && !client.users.cache.has(p.userId) && !semFoto.has(p.userId)).slice(0, 25);
+  await Promise.all(faltam.map((p) => client.users.fetch(p.userId).catch(() => semFoto.add(p.userId))));
+  return lista.map((p) => {
+    const quem = guild.members.cache.get(p.userId) ?? client.users.cache.get(p.userId);
+    return { ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome, avatar: quem?.displayAvatarURL({ size: 64 }) ?? null };
+  });
 }
 
 // ---------- Hierarquia (aba Cargos) ----------
@@ -376,17 +402,12 @@ async function aplicarHierarquia(guild, cfg, editada, rel) {
 const NOME_CARGO_NIVER = 'Aniversariante do dia';
 const DIA = 24 * 60 * 60 * 1000;
 
-/** Cadastra pelo /aniversario ou pelo formulário do botão do painel */
-async function cadastrarNiver(interacao, texto) {
-  const t = String(texto ?? '').trim().toLowerCase();
-  if (['apagar', 'remover', 'tirar'].includes(t)) {
-    await tirarAniversario(interacao.user.id);
-    return interacao.editReply('Tirei seu aniversário da lista.');
-  }
-  const lida = lerData(texto, hojeNoBrasil());
+/** Cadastra pelo /aniversario ou pelo formulário do botão do painel. blocos = { dia, mes, ano } */
+async function cadastrarNiver(interacao, blocos) {
+  const lida = lerDataEmBlocos(blocos, hojeNoBrasil());
   if (lida.erro) return interacao.editReply(`⚠️ ${lida.erro}`);
   await salvarAniversario({ userId: interacao.user.id, nome: interacao.member.displayName, d: lida.d, ano: lida.ano });
-  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario apagar\`.`);
+  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario-apagar\`.`);
 }
 
 const formularioNiver = () =>
@@ -394,11 +415,16 @@ const formularioNiver = () =>
     .setCustomId('niver:modal')
     .setTitle('Seu aniversário')
     .addLabelComponents(
-      new LabelBuilder()
-        .setLabel('Dia e mês (o ano é opcional)')
-        .setDescription('Tipo 14/05/2003 ou 14/05. Sem ano, a mensagem sai sem idade.')
-        .setTextInputComponent(new TextInputBuilder().setCustomId('data').setStyle(TextInputStyle.Short).setPlaceholder('14/05/2003').setRequired(true).setMaxLength(10)),
+      bloco('dia', 'Dia (DD)', '14', 2, true),
+      bloco('mes', 'Mês (MM)', '05', 2, true),
+      bloco('ano', 'Ano (AAAA)', '2003', 4, false).setDescription('Opcional. Sem ano, a mensagem sai sem idade.'),
     );
+
+/** Campo do formulário de aniversário: um bloco da data */
+function bloco(id, rotulo, exemplo, tamanho, obrigatorio) {
+  const campo = new TextInputBuilder().setCustomId(id).setStyle(TextInputStyle.Short).setPlaceholder(exemplo).setRequired(obrigatorio).setMinLength(obrigatorio ? 1 : 0).setMaxLength(tamanho);
+  return new LabelBuilder().setLabel(rotulo).setTextInputComponent(campo);
+}
 
 /** Cargo "Aniversariante do dia" (cria se não existe) */
 async function cargoAniversariante(guild) {
@@ -697,7 +723,7 @@ async function donoDoBot() {
 export const api = {
   saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline' }),
 
-  estado(servidorId) {
+  async estado(servidorId) {
     const cfg = dados.config();
     const guild = servidor(servidorId || cfg.servidorId);
     const user = client.isReady() ? client.user : null;
@@ -711,7 +737,7 @@ export const api = {
       servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name })) : [],
       servidor: guild ? infoServidor(guild) : null,
       noticias: NOVIDADES,
-      aniversarios: guild ? lerAniversarios().map((p) => ({ ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome })) : [],
+      aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { aniversariantesDoDia, diasAteNiver, lerData, textoDoNiver } from '../lib/aniversarios.js';
+import { aniversariantesDoDia, diasAteNiver, lerData, lerDataEmBlocos, textoDoNiver } from '../lib/aniversarios.js';
 import { linhasDoPainel } from '../lib/painel.js';
 import { dadosNovos } from './ajuda.js';
 
@@ -18,6 +18,17 @@ test('data inválida dá a mensagem do design', () => {
   assert.deepEqual(lerData('maio', hoje(2, 11)), { erro: 'Data no formato dia/mês, tipo 14/05.' });
   assert.deepEqual(lerData('14/05/03', hoje(2, 11)), { erro: 'Ano com 4 dígitos, tipo 2003 (ou deixa vazio).' });
   assert.deepEqual(lerData('14/05/2099', hoje(2, 11)), { erro: 'Ano com 4 dígitos, tipo 2003 (ou deixa vazio).' });
+});
+
+test('data em blocos (dia DD, mês MM, ano AAAA) do /aniversario e do formulário', () => {
+  assert.deepEqual(lerDataEmBlocos({ dia: 14, mes: 5, ano: 2003 }, hoje(2, 11)), { d: '14/05', ano: 2003 });
+  assert.deepEqual(lerDataEmBlocos({ dia: '4', mes: '05', ano: '' }, hoje(2, 11)), { d: '04/05', ano: null });
+  assert.deepEqual(lerDataEmBlocos({ dia: 9, mes: 12, ano: null }, hoje(2, 11)), { d: '09/12', ano: null });
+  const invalida = { erro: 'Essa data não existe: confere o dia (DD) e o mês (MM), tipo dia 14 e mês 05.' };
+  assert.deepEqual(lerDataEmBlocos({ dia: 31, mes: 2 }, hoje(2, 11)), invalida);
+  assert.deepEqual(lerDataEmBlocos({ dia: 'ab', mes: 5 }, hoje(2, 11)), invalida);
+  assert.deepEqual(lerDataEmBlocos({ dia: 14, mes: 5, ano: '03' }, hoje(2, 11)), { erro: 'Ano com 4 dígitos, tipo 2003 (ou deixa vazio).' });
+  assert.deepEqual(lerDataEmBlocos({ dia: 14, mes: 5, ano: 2099 }, hoje(2, 11)), { erro: 'Ano com 4 dígitos, tipo 2003 (ou deixa vazio).' });
 });
 
 test('quem faz aniversário hoje (29/02 comemora em 28/02 em ano comum)', () => {
