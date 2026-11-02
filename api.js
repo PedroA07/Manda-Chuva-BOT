@@ -17,7 +17,10 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/salvar': (corpo) => api.salvar(corpo),
     'POST /api/enviar': (corpo) => api.enviar(corpo?.canalId),
     'POST /api/apagar': (corpo) => api.apagar(corpo?.mensagemId),
+    'POST /api/anexo': (corpo) => api.anexo(corpo),
   };
+  // Imagem em base64 (até 8 MB) fica maior que o limite normal
+  const limites = { 'POST /api/anexo': 12_000_000 };
   const permitida = (origem) => ORIGEM_LOCAL.test(origem) || origens.includes(origem);
 
   const servidor = createServer(async (req, res) => {
@@ -44,13 +47,22 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
       // A hospedagem usa pra ver se o bot está vivo (e o MANTER_ACORDADO também)
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/saude')) return responder(res, 200, { ...api.saude(), versao: VERSAO });
 
+      // Imagens enviadas pelo painel: públicas (vão pro Discord de qualquer jeito) pra <img> conseguir mostrar
+      const anexo = req.method === 'GET' && /^\/anexos\/([0-9a-f]{16})(\.\w+)?$/.exec(url.pathname);
+      if (anexo) {
+        const a = await api.lerAnexo?.(anexo[1]);
+        if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
+        res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=86400, immutable' });
+        return res.end(a.buffer);
+      }
+
       const rota = rotas[`${req.method} ${url.pathname}`];
       if (!rota) return responder(res, 404, { erro: 'Não encontrado.' });
       if (origem && !permitida(origem)) return responder(res, 403, { erro: `O site ${origem} não está no PAINEL_ORIGENS do bot.` });
       // Cabeçalho próprio: um site qualquer aberto no navegador não consegue chamar a API
       if (req.headers['x-painel'] !== '1') return responder(res, 403, { erro: 'Requisição bloqueada.' });
       if (senha && !senhaConfere(req.headers.authorization, senha)) return responder(res, 401, { erro: 'Senha errada.' });
-      const corpo = req.method === 'POST' ? await lerCorpo(req) : null;
+      const corpo = req.method === 'POST' ? await lerCorpo(req, limites[`${req.method} ${url.pathname}`]) : null;
       responder(res, 200, await rota(corpo, url));
     } catch (erro) {
       if (!erro.status) console.error(erro);
@@ -79,13 +91,13 @@ function senhaConfere(cabecalho, senha) {
   return timingSafeEqual(resumo(recebida), resumo(senha));
 }
 
-function lerCorpo(req) {
+function lerCorpo(req, limite = 1_000_000) {
   return new Promise((resolve, reject) => {
     const partes = [];
     let tamanho = 0;
     req.on('data', (parte) => {
       tamanho += parte.length;
-      if (tamanho > 1_000_000) {
+      if (tamanho > limite) {
         reject(Object.assign(new Error('Requisição grande demais.'), { status: 413 }));
         req.destroy();
       } else partes.push(parte);

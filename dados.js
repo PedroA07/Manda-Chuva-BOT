@@ -1,6 +1,6 @@
 // Guarda a configuração e os painéis enviados: em dados/*.json ou, com GIST_ID e GIST_TOKEN definidos,
 // num Gist secreto do GitHub (pra hospedagem grátis que apaga os arquivos ao reiniciar, como a Render)
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -178,8 +178,9 @@ export async function carregar() {
   let bruto, lista;
   if (gist) {
     const arquivos = await lerGist();
-    bruto = interpretar(arquivos['config.json'], 'config.json do Gist');
-    lista = interpretar(arquivos['paineis.json'], 'paineis.json do Gist');
+    bruto = interpretar(arquivos['config.json']?.conteudo, 'config.json do Gist');
+    lista = interpretar(arquivos['paineis.json']?.conteudo, 'paineis.json do Gist');
+    extras = arquivos;
     console.log(`💾 Configuração guardada no Gist ${gist.id}`);
   } else {
     mkdirSync(PASTA, { recursive: true });
@@ -211,15 +212,67 @@ export async function esperarGravacao() {
   return erroGist;
 }
 
-function lerJson(arquivo) {
-  let texto;
+// ---------- Arquivos extras (anexos e, nas próximas versões, aniversários e ocorrências) ----------
+// No Gist, arquivo grande (> 1 MB) vem cortado na leitura inicial: só baixa quando alguém pedir.
+/** @type {Record<string, { conteudo?: string, raw?: string }>} */
+let extras = {};
+
+/** Texto de um arquivo extra já carregado (pequeno), ou null */
+export function lerExtra(nome) {
+  return gist ? (extras[nome]?.conteudo ?? null) : lerTexto(new URL(nome, PASTA));
+}
+
+/** Texto de um arquivo extra, baixando do Gist se precisar, ou null */
+export async function lerExtraGrande(nome) {
+  if (!gist) return lerTexto(new URL(nome, PASTA));
+  const e = extras[nome];
+  if (!e) return null;
+  if (e.conteudo == null) {
+    const r = await fetch(e.raw, { signal: AbortSignal.timeout(30_000) });
+    if (!r.ok) throw new Error(`o GitHub respondeu ${r.status} ao baixar ${nome}`);
+    e.conteudo = await r.text();
+  }
+  return e.conteudo;
+}
+
+/**
+ * Grava (texto) ou apaga (null) arquivos extras. Devolve a mensagem de erro, ou null se deu certo.
+ * @param {Record<string, string | null>} arquivos
+ */
+export async function gravarExtras(arquivos) {
+  if (!gist) {
+    mkdirSync(PASTA, { recursive: true });
+    for (const [nome, texto] of Object.entries(arquivos)) {
+      if (texto == null) rmSync(new URL(nome, PASTA), { force: true });
+      else gravarTexto(new URL(nome, PASTA), texto);
+    }
+    return null;
+  }
+  for (const [nome, texto] of Object.entries(arquivos)) {
+    if (texto == null) delete extras[nome];
+    else extras[nome] = { conteudo: texto };
+  }
+  const files = Object.fromEntries(Object.entries(arquivos).map(([nome, texto]) => [nome, texto == null ? null : { content: texto }]));
+  let erro = null;
+  envio = envio.then(() => chamarGist('PATCH', { files }, 120_000)).catch((e) => {
+    erro = e.message;
+    console.error('⚠️  Não consegui salvar no Gist:', e.message);
+  });
+  await envio;
+  return erro;
+}
+
+function lerTexto(arquivo) {
   try {
-    texto = readFileSync(arquivo, 'utf8');
+    return readFileSync(arquivo, 'utf8');
   } catch (erro) {
     if (erro.code === 'ENOENT') return null;
     throw erro;
   }
-  return interpretar(texto, fileURLToPath(arquivo));
+}
+
+function lerJson(arquivo) {
+  return interpretar(lerTexto(arquivo), fileURLToPath(arquivo));
 }
 
 function interpretar(texto, nome) {
@@ -232,11 +285,12 @@ function interpretar(texto, nome) {
 }
 
 // Grava num arquivo temporário e renomeia: se o PC desligar no meio, o arquivo antigo continua inteiro
-function gravar(arquivo, conteudo) {
+function gravarTexto(arquivo, texto) {
   const temp = new URL(`${arquivo.href}.tmp`);
-  writeFileSync(temp, JSON.stringify(conteudo, null, 2));
+  writeFileSync(temp, texto);
   renameSync(temp, arquivo);
 }
+const gravar = (arquivo, conteudo) => gravarTexto(arquivo, JSON.stringify(conteudo, null, 2));
 
 // ---------- Gist do GitHub ----------
 let envio = Promise.resolve();
@@ -244,7 +298,7 @@ let esperando = false;
 /** @type {string | null} */
 let erroGist = null;
 
-async function chamarGist(metodo, corpo) {
+async function chamarGist(metodo, corpo, tempo = 15_000) {
   const r = await fetch(`https://api.github.com/gists/${encodeURIComponent(gist.id)}`, {
     method: metodo,
     headers: {
@@ -254,7 +308,7 @@ async function chamarGist(metodo, corpo) {
       'X-GitHub-Api-Version': '2022-11-28',
     },
     body: corpo && JSON.stringify(corpo),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(tempo),
   });
   if (r.ok) return r.json();
   if (r.status === 401) throw new Error('o GIST_TOKEN está errado ou venceu');
@@ -262,12 +316,13 @@ async function chamarGist(metodo, corpo) {
   throw new Error(`o GitHub respondeu ${r.status}`);
 }
 
-/** Lê os arquivos do Gist: { 'config.json': texto, ... } */
+/** Lê os arquivos do Gist: { 'config.json': { conteudo, raw }, ... }. Pedaço de anexo cortado fica pra baixar depois. */
 async function lerGist() {
   const resposta = await chamarGist('GET');
   const arquivos = {};
   for (const [nome, a] of Object.entries(resposta.files ?? {})) {
-    arquivos[nome] = a.truncated ? await (await fetch(a.raw_url)).text() : a.content;
+    const depois = a.truncated && nome.startsWith('anexo-');
+    arquivos[nome] = { raw: a.raw_url, conteudo: depois ? undefined : a.truncated ? await (await fetch(a.raw_url)).text() : a.content };
   }
   return arquivos;
 }

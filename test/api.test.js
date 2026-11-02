@@ -10,6 +10,30 @@ async function subir(api, extra = {}) {
   return { servidor, base: `http://127.0.0.1:${servidor.address().port}` };
 }
 
+test('anexo público é servido com o tipo certo e sem precisar de cabeçalho', async (t) => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const { servidor, base } = await subir({
+    saude: () => ({}),
+    lerAnexo: async (id) => (id === '0123456789abcdef' ? { buffer: png, tipo: 'image/png', ext: 'png' } : null),
+  });
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/anexos/0123456789abcdef.png`);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), png);
+  assert.equal((await fetch(`${base}/anexos/ffffffffffffffff`)).status, 404);
+});
+
+test('upload de anexo aceita corpo maior que 1 MB', async (t) => {
+  let recebido;
+  const { servidor, base } = await subir({ saude: () => ({}), anexo: async (c) => ((recebido = c), { id: 'x', ref: 'anexo:x' }) });
+  t.after(() => servidor.close());
+  const base64 = Buffer.alloc(3 * 1024 * 1024).toString('base64');
+  const r = await fetch(`${base}/api/anexo`, { method: 'POST', headers: { 'X-Painel': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ base64, tipo: 'image/png' }) });
+  assert.equal(r.status, 200);
+  assert.equal(recebido.base64.length, base64.length);
+});
+
 test('/saude mostra a versão do bot', async (t) => {
   const { servidor, base } = await subir({ saude: () => ({ ok: true, bot: 'offline' }) });
   t.after(() => servidor.close());

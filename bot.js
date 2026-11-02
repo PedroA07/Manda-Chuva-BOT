@@ -11,6 +11,7 @@ import {
   SlashCommandBuilder,
 } from 'discord.js';
 import * as dados from './dados.js';
+import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { midia } from './lib/imagens.js';
@@ -162,17 +163,36 @@ async function bolinhasDoPainel(cfg) {
   return bolinhas;
 }
 
-/** Converte as imagens da config em URLs pra mensagem */
-function imagensDaMensagem() {
-  return { url: (ref, padrao) => midia(ref, padrao)?.url ?? null, arquivos: [] };
+/**
+ * Converte as imagens da config em URLs pra mensagem. Imagem enviada pelo painel vai como arquivo junto
+ * (attachment://). arquivos() devolve só os que a mensagem usou.
+ * @param {object} imgs as imagens daquela mensagem (pra carregar os anexos antes)
+ */
+async function imagensDaMensagem(imgs) {
+  const carregados = new Map();
+  for (const id of refsDeAnexo(imgs)) {
+    const a = await lerAnexo(id).catch((erro) => console.error(`Não consegui ler a imagem ${id}:`, erro.message));
+    if (a) carregados.set(id, { attachment: a.buffer, name: `anexo-${id}.${a.ext}` });
+  }
+  const usados = new Map();
+  const url = (ref, padrao) => {
+    const m = midia(ref, padrao);
+    if (!m || 'url' in m) return m?.url ?? null;
+    const arquivo = carregados.get(m.anexo);
+    if (!arquivo) return null;
+    usados.set(m.anexo, arquivo);
+    return `attachment://${arquivo.name}`;
+  };
+  return { url, arquivos: () => [...usados.values()] };
 }
 
 /** Mensagem do painel no layout novo. @param {import('discord.js').Guild} guild */
 export async function montarMensagem(guild, cfg = dados.config()) {
   // Menção de cargo aparece com a cor do cargo; allowedMentions vazio garante que não marca ninguém
   const mencao = (cor) => (cor.cargoId && guild.roles.cache.has(cor.cargoId) ? `<@&${cor.cargoId}>` : `**${cor.nome}**`);
-  const { url, arquivos } = imagensDaMensagem();
-  return montarV2({ ...pedacoDoPainel(cfg, { mencao, bolinhas: await bolinhasDoPainel(cfg), url }), arquivos });
+  const { url, arquivos } = await imagensDaMensagem(cfg.painel.imgs);
+  const pedaco = pedacoDoPainel(cfg, { mencao, bolinhas: await bolinhasDoPainel(cfg), url });
+  return montarV2({ ...pedaco, arquivos: arquivos() });
 }
 
 // ---------- Comando /cor ----------
@@ -377,8 +397,13 @@ export const api = {
       if (velho) await velho.commands.set([]).catch(() => {});
     }
     await avisarSeNaoGravou(rel);
+    limparAnexos(cfg).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
     return { config: cfg, relatorio: rel };
   },
+
+  // Imagem enviada pelo painel ("Anexar"): guarda e devolve a referência pra pôr na config
+  anexo: (corpo) => salvarAnexo(corpo),
+  lerAnexo: (id) => lerAnexo(id),
 
   async enviar(canalId) {
     const guild = servidor();
