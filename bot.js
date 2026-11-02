@@ -9,10 +9,15 @@ import {
   OAuth2Scopes,
   PermissionFlagsBits as P,
   SlashCommandBuilder,
+  LabelBuilder,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
 } from 'discord.js';
 import * as dados from './dados.js';
 import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
-import { baixarImagem, desenharCard } from './lib/card.js';
+import { aniversariantesDoDia, lerAniversarios, lerData, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
+import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
@@ -24,7 +29,7 @@ import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel
 import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
-import { aplicarTema, hojeNoBrasil, temaAtivo } from './lib/temas.js';
+import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { VERSAO } from './lib/versao.js';
 
 // Permissões que vão no link de convite (e que o painel confere se o bot tem)
@@ -141,6 +146,19 @@ async function escolherCor(interacao, alvoId, idsDeCor) {
 /** @param {import('discord.js').Interaction} interacao */
 async function responderInteracao(interacao) {
   if (!interacao.inCachedGuild()) return;
+  // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
+  if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
+  const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
+  const niverCmd = interacao.isChatInputCommand() && interacao.commandName === 'aniversario';
+  if (niverForm || niverCmd) {
+    try {
+      await interacao.deferReply({ flags: MessageFlags.Ephemeral });
+      await cadastrarNiver(interacao, niverForm ? interacao.fields.getTextInputValue('data') : interacao.options.getString('data', true));
+    } catch (erro) {
+      console.error('Erro no cadastro de aniversário:', erro);
+    }
+    return;
+  }
   const ehBotao = interacao.isButton() && interacao.customId.startsWith('cor:');
   const ehComando = interacao.isChatInputCommand() && interacao.commandName === 'cor';
   if (!ehBotao && !ehComando) return;
@@ -235,6 +253,11 @@ export function comandos(cfg = dados.config()) {
         o.setName('cor').setDescription('Qual cor?').setRequired(true).addChoices(...escolhas, { name: '❌ Tirar a cor', value: REMOVER }),
       )
       .toJSON(),
+    new SlashCommandBuilder()
+      .setName('aniversario')
+      .setDescription('Cadastra o seu aniversário (o ano é opcional)')
+      .addStringOption((o) => o.setName('data').setDescription('Tipo 14/05/2003 ou 14/05. Pra tirar da lista: apagar').setRequired(true).setMaxLength(10))
+      .toJSON(),
   ];
 }
 
@@ -283,6 +306,100 @@ async function sincronizarCargos(guild, cfg, rel) {
       rel.push(`⚠️ ${cor.nome}: ${explicarErro(erro)}`);
     }
   }
+}
+
+// ---------- Aniversários ----------
+const NOME_CARGO_NIVER = 'Aniversariante do dia';
+const DIA = 24 * 60 * 60 * 1000;
+
+/** Cadastra pelo /aniversario ou pelo formulário do botão do painel */
+async function cadastrarNiver(interacao, texto) {
+  const t = String(texto ?? '').trim().toLowerCase();
+  if (['apagar', 'remover', 'tirar'].includes(t)) {
+    await tirarAniversario(interacao.user.id);
+    return interacao.editReply('Tirei seu aniversário da lista.');
+  }
+  const lida = lerData(texto, hojeNoBrasil());
+  if (lida.erro) return interacao.editReply(`⚠️ ${lida.erro}`);
+  await salvarAniversario({ userId: interacao.user.id, nome: interacao.member.displayName, d: lida.d, ano: lida.ano });
+  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario apagar\`.`);
+}
+
+const formularioNiver = () =>
+  new ModalBuilder()
+    .setCustomId('niver:modal')
+    .setTitle('Seu aniversário')
+    .addLabelComponents(
+      new LabelBuilder()
+        .setLabel('Dia e mês (o ano é opcional)')
+        .setDescription('Tipo 14/05/2003 ou 14/05. Sem ano, a mensagem sai sem idade.')
+        .setTextInputComponent(new TextInputBuilder().setCustomId('data').setStyle(TextInputStyle.Short).setPlaceholder('14/05/2003').setRequired(true).setMaxLength(10)),
+    );
+
+/** Cargo "Aniversariante do dia" (cria se não existe) */
+async function cargoAniversariante(guild) {
+  const reg = lerRegistro();
+  let cargo = (reg.cargoNiverId && guild.roles.cache.get(reg.cargoNiverId)) || guild.roles.cache.find((r) => r.name === NOME_CARGO_NIVER);
+  if (!cargo) cargo = await guild.roles.create({ name: NOME_CARGO_NIVER, colors: { primaryColor: 0xf2c14e }, hoist: true, permissions: [], reason: 'Aniversários do Manda Chuva' });
+  if (reg.cargoNiverId !== cargo.id) await salvarRegistro({ cargoNiverId: cargo.id });
+  return cargo;
+}
+
+async function postarAniversario(guild, canal, p, hoje) {
+  const membro = await guild.members.fetch(p.userId).catch(() => null);
+  if (!membro) return; // saiu do servidor
+  const n = dados.config().niver;
+  const vars = { usuario: `<@${p.userId}>`, nome: membro.displayName, servidor: guild.name, idade: p.ano ? hoje.ano - p.ano : null };
+  const noCard = { ...vars, usuario: vars.nome };
+  const m = midia(n.fundo || 'banners/card-confete.gif');
+  const fundo = m?.anexo ? (await lerAnexo(m.anexo).catch(() => null))?.buffer : m?.url ? await baixarImagem(m.url) : null;
+  const avatar = await baixarImagem(membro.displayAvatarURL({ extension: 'png', size: 256 }));
+  const png = await desenharCardNiver({ fundo, avatar, nome: membro.displayName, topo: textoDoNiver(n.topo, noCard, n.idade), baixo: textoDoNiver(n.baixo, noCard, n.idade) }).catch(() => null);
+  let abaixo;
+  if (n.cargo) {
+    const cargo = await cargoAniversariante(guild).catch((erro) => console.error('Cargo de aniversário:', explicarErro(erro)));
+    if (cargo && (await membro.roles.add(cargo, 'Aniversário').then(() => true, () => false))) {
+      await salvarRegistro({ niverCargos: [...(lerRegistro().niverCargos ?? []), { userId: p.userId, ate: Date.now() + DIA }] });
+      abaixo = `-# ${membro.displayName} ganhou o cargo <@&${cargo.id}> por 24 horas.`;
+    }
+  }
+  const msg = montarV2({ fora: textoDoNiver(n.msg, vars, n.idade), card: png ? 'attachment://card.png' : undefined, abaixo, arquivos: png ? [{ attachment: png, name: 'card.png' }] : [], mencoes: { users: [p.userId] } });
+  await canal.send(msg);
+  if (n.dm) await membro.send({ ...msg, allowedMentions: { parse: [] } }).catch(() => {});
+}
+
+/** A cada 10 min: tira o cargo de quem já passou 24 h e, depois do horário escolhido, posta os aniversários do dia (uma vez) */
+async function conferirAniversarios() {
+  const guild = servidor();
+  if (soPainel || !guild) return;
+  const reg = lerRegistro();
+  const vencidos = (reg.niverCargos ?? []).filter((x) => x.ate <= Date.now());
+  for (const v of vencidos) {
+    const membro = await guild.members.fetch(v.userId).catch(() => null);
+    if (membro && reg.cargoNiverId) await membro.roles.remove(reg.cargoNiverId, 'Fim do dia do aniversário').catch(() => {});
+  }
+  if (vencidos.length) await salvarRegistro({ niverCargos: (lerRegistro().niverCargos ?? []).filter((x) => x.ate > Date.now()) });
+  const n = dados.config().niver;
+  const hoje = hojeNoBrasil();
+  const chave = `${hoje.ano}-${hoje.mes}-${hoje.dia}`;
+  if (!n.on || !n.canalId || lerRegistro().niverDia === chave || horaNoBrasil() < +n.hora.slice(0, 2)) return;
+  await salvarRegistro({ niverDia: chave }); // anota antes: reinício no meio não posta duas vezes
+  const canal = guild.channels.cache.get(n.canalId);
+  if (!canal?.isTextBased()) return;
+  for (const p of aniversariantesDoDia(lerAniversarios(), hoje)) {
+    await postarAniversario(guild, canal, p, hoje).catch((erro) => console.error('Aniversário:', explicarErro(erro)));
+  }
+}
+
+/** Membro pelo id, menção, nome de usuário ou apelido */
+async function acharMembro(guild, q) {
+  const id = /^<?@?!?(\d{15,25})>?$/.exec(q)?.[1];
+  if (id) return guild.members.fetch(id).catch(() => null);
+  const alvo = q.toLowerCase();
+  const doCache = guild.members.cache.find((m) => [m.user.username, m.displayName, m.user.globalName].some((x) => x?.toLowerCase() === alvo));
+  if (doCache) return doCache;
+  const achados = await guild.members.search({ query: q, limit: 5 }).catch(() => null);
+  return achados?.find((m) => [m.user.username, m.displayName].some((x) => x?.toLowerCase() === alvo)) ?? achados?.first() ?? null;
 }
 
 // ---------- Datas festivas ----------
@@ -527,6 +644,7 @@ export const api = {
       servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name })) : [],
       servidor: guild ? infoServidor(guild) : null,
       noticias: NOVIDADES,
+      aniversarios: guild ? lerAniversarios().map((p) => ({ ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome })) : [],
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -565,6 +683,27 @@ export const api = {
   // Imagem enviada pelo painel ("Anexar"): guarda e devolve a referência pra pôr na config
   anexo: (corpo) => salvarAnexo(corpo),
   lerAnexo: (id) => lerAnexo(id),
+
+  // Lista de aniversários: adicionar alguém na mão ou tirar da lista (vale na hora, não espera o Salvar)
+  async aniversario(corpo) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    if (corpo?.acao === 'remover') {
+      await tirarAniversario(String(corpo.userId ?? ''));
+      return { ok: true };
+    }
+    const q = String(corpo?.membro ?? '').trim().replace(/^@/, '');
+    if (!q) throw comStatus(400, 'Faltou o nome do membro.');
+    const ano = String(corpo?.ano ?? '').trim();
+    const lida = lerData(`${String(corpo?.data ?? '').trim()}${ano ? `/${ano}` : ''}`, hojeNoBrasil());
+    if (lida.erro) throw comStatus(400, lida.erro);
+    const membro = await acharMembro(guild, q);
+    if (!membro) throw comStatus(400, 'Não achei esse membro no servidor.');
+    if (lerAniversarios().some((p) => p.userId === membro.id)) throw comStatus(400, `${membro.displayName} já está na lista.`);
+    const erro = await salvarAniversario({ userId: membro.id, nome: membro.displayName, d: lida.d, ano: lida.ano });
+    if (erro) throw comStatus(500, `Não consegui guardar: ${erro}`);
+    return { ok: true, nome: membro.displayName, d: lida.d };
+  },
 
   // "Testar comigo": manda a mensagem do evento (como está salva) na DM do dono do bot, com ele de exemplo
   async testarPortaria(evento) {
@@ -662,6 +801,10 @@ function prepararCliente(c) {
     if (!cfg.servidorId && pronto.guilds.cache.size === 1) dados.salvarConfig({ ...cfg, servidorId: pronto.guilds.cache.firstKey() ?? null });
     // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
     setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
+    if (!soPainel) {
+      setTimeout(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 20_000);
+      setInterval(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 10 * 60_000);
+    }
     // Virou o dia e mudou a data festiva? Os painéis já enviados trocam de visual sozinhos
     if (!soPainel) {
       setTimeout(() => conferirTema().catch(() => {}), 15_000);
