@@ -21,6 +21,7 @@ import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
+import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
 import { midia, PADROES } from './lib/imagens.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
@@ -308,6 +309,69 @@ async function sincronizarCargos(guild, cfg, rel) {
   }
 }
 
+// ---------- Hierarquia (aba Cargos) ----------
+/** Cargos do servidor do jeito que o lib/hierarquia.js entende (sem o @everyone) */
+function descreverCargos(guild) {
+  return guild.roles.cache
+    .filter((r) => r.id !== guild.id)
+    .map((r) => ({
+      id: r.id,
+      nome: r.name,
+      posicao: r.position,
+      cor: r.colors.primaryColor,
+      bits: r.permissions.bitfield,
+      hoist: r.hoist,
+      mencionavel: r.mentionable,
+      gerenciado: !r.managed ? null : r.tags?.botId ? 'bot' : r.tags?.premiumSubscriberRole ? 'impulso' : 'integracao',
+      membros: temMembros() ? r.members.size : null,
+    }));
+}
+
+/** Das permissões do painel, as que o bot tem (só dá pra dar o que ele mesmo tem) */
+const permsDoBot = (eu) => PERMS.filter(([, b]) => eu?.permissions.has(b));
+
+/**
+ * Aplica a hierarquia editada no painel ({ lista, apagar }). Sem edição, só junta os cargos de cor
+ * num bloco na ordem da aba Cores (cor nova entra no bloco em vez de ficar lá embaixo).
+ */
+async function aplicarHierarquia(guild, cfg, editada, rel) {
+  const eu = guild.members.me;
+  if (!eu?.permissions.has(P.ManageRoles)) {
+    if (editada) rel.push('⚠️ Não mexi na hierarquia: estou sem a permissão "Gerenciar cargos".');
+    return;
+  }
+  const motivo = 'Painel: hierarquia de cargos';
+  const tentar = (promessa, ok, nome) => promessa.then(ok, (erro) => rel.push(`⚠️ ${nome}: ${explicarErro(erro)}`));
+  try {
+    await guild.roles.fetch();
+    const plano = planejarHierarquia({
+      atual: descreverCargos(guild),
+      editada,
+      botId: eu.roles.highest.id,
+      idsDeCor: cfg.cores.map((c) => c.cargoId).filter(Boolean),
+      permsDoBot: permsDoBot(eu).reduce((s, [, b]) => s | b, 0n),
+    });
+    rel.push(...plano.avisos);
+    for (const id of plano.apagar) {
+      const nome = guild.roles.cache.get(id)?.name ?? id;
+      await tentar(guild.roles.delete(id, motivo), () => rel.push(`Cargo apagado: ${nome}`), nome);
+    }
+    for (const e of plano.editar) await tentar(guild.roles.edit(e.id, { ...e.dados, reason: motivo }), () => rel.push(`Cargo atualizado: ${e.nome}`), e.nome);
+    const criados = new Map();
+    for (const c of plano.criar) {
+      await tentar(guild.roles.create({ ...c.dados, reason: motivo }), (r) => { criados.set(c.chave, r.id); rel.push(`Cargo criado: ${c.nome}`); }, c.nome);
+    }
+    if (plano.criar.length || plano.apagar.length) await guild.roles.fetch();
+    const pos = posicoes(plano.ordem.map((id) => criados.get(id) ?? id), descreverCargos(guild));
+    if (pos.length) {
+      await guild.roles.setPositions(pos.map((p) => ({ role: p.id, position: p.position })));
+      rel.push('Ordem dos cargos atualizada.');
+    }
+  } catch (erro) {
+    rel.push(`⚠️ Hierarquia: ${explicarErro(erro)}`);
+  }
+}
+
 // ---------- Aniversários ----------
 const NOME_CARGO_NIVER = 'Aniversariante do dia';
 const DIA = 24 * 60 * 60 * 1000;
@@ -543,6 +607,9 @@ function infoServidor(guild) {
       acimaDoBot: deCor.filter((r) => !r.editable).map((r) => r.name),
       coloridosAcima,
       semCargo: cores.length - deCor.length,
+      // Aba Cargos: a lista de cima pra baixo (cores num bloco só) e as permissões que o bot consegue dar
+      lista: listaDaHierarquia(descreverCargos(guild), { botId: eu?.roles.highest.id ?? null, idsDeCor: deCor.map((r) => r.id) }),
+      permsDoBot: permsDoBot(eu).map(([k]) => k),
     },
   };
 }
@@ -659,13 +726,15 @@ export const api = {
 
   async salvar(entrada) {
     const { cfg, erros } = dados.normalizar(entrada);
-    erros.push(...errosDoPainel(cfg));
+    erros.push(...errosDoPainel(cfg), ...errosDaHierarquia(entrada?.hierarquia));
     if (erros.length) throw comStatus(400, erros.join('\n'));
     const antes = dados.config().servidorId;
     const rel = [];
     const guild = servidor(cfg.servidorId);
-    if (guild) await sincronizarCargos(guild, cfg, rel);
-    else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
+    if (guild) {
+      await sincronizarCargos(guild, cfg, rel);
+      await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
+    } else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
     dados.salvarConfig(cfg);
     if (guild) {
       await atualizarPaineis(guild, rel);
