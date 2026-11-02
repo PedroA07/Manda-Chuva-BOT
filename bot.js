@@ -24,6 +24,7 @@ import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel
 import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
+import { aplicarTema, hojeNoBrasil, temaAtivo } from './lib/temas.js';
 import { VERSAO } from './lib/versao.js';
 
 // Permissões que vão no link de convite (e que o painel confere se o bot tem)
@@ -208,10 +209,19 @@ async function imagensDaMensagem(imgs, guild) {
 export async function montarMensagem(guild, cfg = dados.config()) {
   // Menção de cargo aparece com a cor do cargo; allowedMentions vazio garante que não marca ninguém
   const mencao = (cor) => (cor.cargoId && guild.roles.cache.has(cor.cargoId) ? `<@&${cor.cargoId}>` : `**${cor.nome}**`);
-  const { url, arquivos } = await imagensDaMensagem(cfg.painel.imgs, guild);
-  const pedaco = pedacoDoPainel(cfg, { mencao, bolinhas: await bolinhasDoPainel(cfg), url });
-  return montarV2({ ...pedaco, arquivos: arquivos() });
+  // Data festiva no ar: banner, miniatura e cor do tema, com a frase em cima do texto
+  const tema = aplicarTema('painel', cfg.painel.imgs, temaDeHoje(cfg), cfg.temas.respeitar);
+  const c = tema ? { ...cfg, painel: { ...cfg.painel, imgs: tema.imgs, corDoEmbed: tema.cor } } : cfg;
+  const { url, arquivos } = await imagensDaMensagem(c.painel.imgs, guild);
+  const pedaco = pedacoDoPainel(c, { mencao, bolinhas: await bolinhasDoPainel(c), url });
+  return montarV2({ ...comFrase(pedaco, tema), arquivos: arquivos() });
 }
+
+/** Tema de data festiva que vale hoje (ou null) */
+export const temaDeHoje = (cfg = dados.config()) => temaAtivo(cfg.temas, hojeNoBrasil());
+
+/** Põe a frase do tema em negrito no começo do texto da caixa */
+const comFrase = (pedaco, tema) => (tema?.frase ? { ...pedaco, texto: [`**${tema.frase}**`, pedaco.texto].filter(Boolean).join('\n\n') } : pedaco);
 
 // ---------- Comando /cor ----------
 export function comandos(cfg = dados.config()) {
@@ -275,6 +285,19 @@ async function sincronizarCargos(guild, cfg, rel) {
   }
 }
 
+// ---------- Datas festivas ----------
+/** Se o tema do dia mudou desde a última vez, atualiza os painéis no Discord e anota */
+async function conferirTema() {
+  const guild = servidor();
+  if (!guild) return;
+  const id = temaDeHoje()?.id ?? '';
+  if (id === (lerRegistro().temaNoAr ?? '')) return;
+  const rel = [];
+  await atualizarPaineis(guild, rel);
+  await salvarRegistro({ temaNoAr: id });
+  console.log(`🎉 Tema do dia: ${id || 'nenhum'}. ${rel.join(' ')}`);
+}
+
 // ---------- Jornal do Campus ----------
 let anunciando = false;
 /**
@@ -292,8 +315,11 @@ async function anunciarNovidades() {
   try {
     const { postar, marcar } = paraAnunciar(NOVIDADES, [...vistas], n.quais);
     for (const noticia of postar) {
-      const { url, arquivos } = await imagensDaMensagem(n.imgs, guild);
-      await canal.send(montarV2({ ...pedacoDaNoticia(noticia, n, { url }), arquivos: arquivos() }));
+      const tema = aplicarTema('news', n.imgs, temaDeHoje(), dados.config().temas.respeitar);
+      const nt = tema ? { ...n, imgs: tema.imgs } : n;
+      const { url, arquivos } = await imagensDaMensagem(nt.imgs, guild);
+      const pedaco = pedacoDaNoticia(noticia, nt, { url });
+      await canal.send(montarV2({ ...comFrase(pedaco, tema), ...(tema && { cor: parseInt(tema.cor.slice(1), 16) }), arquivos: arquivos() }));
       vistas.add(noticia.versao);
       postadas.push(noticia.versao);
     }
@@ -390,6 +416,7 @@ function infoServidor(guild) {
     cargos,
     emojis: guild.emojis.cache.filter((e) => e.available !== false).map((e) => ({ id: e.id, nome: e.name, animado: e.animated, texto: e.toString() })),
     recursos: { degrade: guild.features.includes(GuildFeature.EnhancedRoleColors) },
+    hoje: hojeNoBrasil(),
     podeMencionarTodos: !!eu?.permissions.has(P.MentionEveryone),
     membros: guild.memberCount,
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
@@ -421,12 +448,16 @@ function variaveisDoEvento(ev, { guild, user, membro, executorId, motivo, ate })
 }
 
 /** Mensagem do evento, com o card desenhado (entrada) e as imagens anexadas */
-async function mensagemDoEvento(tipo, ev, vars, { guild, user }) {
+async function mensagemDoEvento(tipo, evOriginal, vars, { guild, user }) {
+  const respeitar = dados.config().temas.respeitar;
+  const tema = aplicarTema(tipo, evOriginal.imgs, temaDeHoje(), respeitar);
+  const ev = tema ? { ...evOriginal, imgs: tema.imgs, cor: tema.cor } : evOriginal;
   const { url, arquivos } = await imagensDaMensagem(ev.imgs, guild);
   const extras = [];
   let card;
   if (tipo === 'entrada' && ev.card.on) {
-    const m = midia(ev.card.bg || PADROES.entrada.card);
+    const bgTema = tema?.cardBg && (!respeitar || !ev.card.bg) ? tema.cardBg : null;
+    const m = midia(bgTema || ev.card.bg || PADROES.entrada.card);
     const fundo = m?.anexo ? (await lerAnexo(m.anexo).catch(() => null))?.buffer : m?.url ? await baixarImagem(m.url) : null;
     const avatar = await baixarImagem(user.displayAvatarURL({ extension: 'png', size: 256 }));
     const noCard = { ...vars, usuario: vars.nome };
@@ -446,7 +477,7 @@ async function mensagemDoEvento(tipo, ev, vars, { guild, user }) {
       card = 'attachment://card.png';
     }
   }
-  return montarV2({ ...pedacoDoEvento(tipo, ev, vars, { url, card }), arquivos: [...arquivos(), ...extras] });
+  return montarV2({ ...comFrase(pedacoDoEvento(tipo, ev, vars, { url, card }), tema), arquivos: [...arquivos(), ...extras] });
 }
 
 /** Chamado pelos eventos do Discord (lib/eventos.js) */
@@ -631,6 +662,11 @@ function prepararCliente(c) {
     if (!cfg.servidorId && pronto.guilds.cache.size === 1) dados.salvarConfig({ ...cfg, servidorId: pronto.guilds.cache.firstKey() ?? null });
     // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
     setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
+    // Virou o dia e mudou a data festiva? Os painéis já enviados trocam de visual sozinhos
+    if (!soPainel) {
+      setTimeout(() => conferirTema().catch(() => {}), 15_000);
+      setInterval(() => conferirTema().catch(() => {}), 30 * 60_000);
+    }
     // Com a intent "Server Members", baixa a lista de membros uma vez; depois os eventos mantêm atualizada
     if (pronto.options.intents.has(I.GuildMembers)) {
       for (const guild of pronto.guilds.cache.values()) await guild.members.fetch().catch((erro) => console.error(`Não consegui listar os membros de ${guild.name}:`, explicarErro(erro)));

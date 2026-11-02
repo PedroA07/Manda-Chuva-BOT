@@ -51,7 +51,25 @@ export const PADRAO = {
     ban: { on: false, canalId: null, titulo: 'Banimento', textoPos: 'fora', cor: '#C4363C', dm: true, mod: true, motivo: true, msg: '{usuario} foi **JUBILADO(A)** do {servidor}. Não volta nem com recurso.' },
     silencio: { on: false, canalId: null, titulo: 'Silenciado', textoPos: 'dentro', cor: '#3498DB', dm: true, mod: true, motivo: true, duracao: '1h', msg: 'Shhh, biblioteca! {usuario} ficou em silêncio por {tempo}.' },
   },
+  // Temas de datas festivas: o bot troca banner, cor e frase das mensagens nessas datas (lib/temas.js)
+  temas: {
+    auto: true,
+    respeitar: true,
+    lista: [
+      ['carnaval', 'Carnaval', '', '', '#9B59B6', 'Bloco dos Memes na rua! Quarta-feira de cinzas a gente volta.', 'carnaval'],
+      ['pascoa', 'Páscoa', '', '', '#2ECC71', 'Caça aos ovos no campus: quem achar primeiro fica com o chocolate.', 'pascoa'],
+      ['namorados', 'Dia dos Namorados', '12/06', '12/06', '#FF6EC7', 'Feliz dia pra quem tem mozão. E pra quem tem só o Wi-Fi da faculdade.'],
+      ['junina', 'Festa Junina', '01/06', '30/06', '#E67E22', 'Olha a cobra! É mentira. Arraiá do campus liberado.'],
+      ['estudante', 'Dia do Estudante', '11/08', '11/08', '#F2C14E', 'Feliz Dia do Estudante! Hoje o café da cantina é por nossa conta (não é).'],
+      ['criancas', 'Dia das Crianças', '12/10', '12/10', '#3498DB', 'Feliz dia pra criança interior que ainda pede pra mãe marcar consulta.'],
+      ['halloween', 'Halloween', '25/10', '31/10', '#E67E22', 'Semana do terror no campus. Cuidado com o DCE assombrado.'],
+      ['natal', 'Natal', '01/12', '26/12', '#C4363C', 'Ho ho ho! O recesso tá chegando.'],
+      ['ano', 'Ano Novo', '27/12', '02/01', '#F2C14E', 'Ano novo, semestre novo, memes novos.'],
+      ['niver', 'Aniversário do servidor', '15/03', '15/03', '#9B59B6', 'Hoje o servidor faz aniversário! Parabéns pra nós.'],
+    ].map(([id, nome, ini, fim, cor, frase, movel]) => ({ id, nome, ini, fim, ...(movel && { movel }), on: true, cor, frase, onde: { painel: true, portaria: true, news: true }, msgs: {} })),
+  },
 };
+const MENSAGENS = ['painel', 'entrada', 'saida', 'expulsao', 'ban', 'silencio', 'news'];
 export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
 export const DURACOES = ['10min', '1h', '1d', '7d', 'sem'];
 
@@ -214,6 +232,45 @@ const SECOES = {
         return [tipo, ev];
       }),
     );
+  },
+
+  temas(bruto, _atual, erros) {
+    const t = obj(bruto);
+    const data = (v) => {
+      const m = /^(\d{1,2})\/(\d{1,2})$/.exec(typeof v === 'string' ? v.trim() : '');
+      return m && +m[1] >= 1 && +m[1] <= 31 && +m[2] >= 1 && +m[2] <= 12 ? `${m[1].padStart(2, '0')}/${m[2].padStart(2, '0')}` : null;
+    };
+    const fixos = new Map(PADRAO.temas.lista.map((x) => [x.id, x]));
+    const vistos = new Set();
+    const lista = [];
+    for (const bruta of (Array.isArray(t.lista) ? t.lista : PADRAO.temas.lista).slice(0, 40)) {
+      const x = obj(bruta);
+      const padrao = fixos.get(x.id);
+      const custom = !padrao;
+      const id = custom ? (typeof x.id === 'string' && /^av[0-9a-z]{1,20}$/.test(x.id) ? x.id : `av${Date.now().toString(36)}${lista.length}`) : x.id;
+      if (vistos.has(id)) continue;
+      vistos.add(id);
+      const nome = txt(x.nome, 60) || padrao?.nome || 'Aviso';
+      const onde = obj(x.onde);
+      const tema = {
+        id,
+        nome,
+        ini: padrao?.movel ? '' : (data(x.ini) ?? ''),
+        fim: padrao?.movel ? '' : (data(x.fim) ?? ''),
+        ...(padrao?.movel && { movel: padrao.movel }),
+        ...(custom && { custom: true, banner: imagem(x.banner, `Banner do aviso "${nome}"`, erros) }),
+        on: typeof x.on === 'boolean' ? x.on : true,
+        cor: typeof x.cor === 'string' && HEX.test(x.cor.trim()) ? hex(x.cor) : (padrao?.cor ?? '#F2C14E'),
+        frase: typeof x.frase === 'string' ? txt(x.frase, 300) : (padrao?.frase ?? ''),
+        onde: { painel: onde.painel !== false, portaria: onde.portaria !== false, news: onde.news !== false },
+        msgs: Object.fromEntries(MENSAGENS.filter((m) => obj(x.msgs)[m]).map((m) => [m, imagem(x.msgs[m], `Imagem do tema "${nome}"`, erros)])),
+      };
+      if (!padrao?.movel && (!tema.ini || !tema.fim)) erros.push(`Tema "${nome}": use dia/mês, tipo 25/12.`);
+      lista.push(tema);
+    }
+    // Data festiva da lista padrão nunca some (só os avisos personalizados podem ser apagados)
+    for (const p of PADRAO.temas.lista) if (!vistos.has(p.id)) lista.push(structuredClone(p));
+    return { auto: t.auto !== false, respeitar: t.respeitar !== false, lista };
   },
 };
 
