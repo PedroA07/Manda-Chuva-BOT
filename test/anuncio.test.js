@@ -39,7 +39,7 @@ test('no máximo 3 de uma vez', () => {
 
 test('mensagem da notícia: menção fora, barra mostarda, jornal, título e rodapé', () => {
   const p = pedacoDaNoticia(N('3.1.0'), { mencao: '223456789012345678', imgs: {} }, { url: (ref, padrao) => padrao });
-  assert.equal(p.fora, '<@&223456789012345678>');
+  assert.equal(p.acima, '<@&223456789012345678>');
   assert.deepEqual(p.mencoes, { roles: ['223456789012345678'] });
   assert.equal(p.cor, 0xf2c14e);
   assert.equal(p.texto, '-# **Jornal do Campus · v3.1.0**\n### Título 3.1.0\nTexto 3.1.0');
@@ -50,8 +50,8 @@ test('mensagem da notícia: menção fora, barra mostarda, jornal, título e rod
 
 test('mensagem da notícia: @everyone e sem menção', () => {
   const todos = pedacoDaNoticia(N('3.1.0'), { mencao: 'everyone', imgs: {} }, { url: () => null });
-  assert.equal(todos.fora, '@everyone');
+  assert.equal(todos.acima, '@everyone');
   assert.deepEqual(todos.mencoes, { everyone: true });
   const ninguem = pedacoDaNoticia(N('3.1.0'), { mencao: '', imgs: {} }, { url: () => null });
-  assert.equal(ninguem.fora, undefined);
+  assert.equal(ninguem.acima, undefined);
 });

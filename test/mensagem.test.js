@@ -27,6 +27,12 @@ test('monta na ordem: topo, texto de fora, caixa, card, finais e botões', () =>
   assert.equal(m.flags, 32768);
 });
 
+test('texto de cima vem antes do banner (menção da notícia)', () => {
+  const m = montarV2({ acima: '@everyone', topo: U('topo'), texto: 'x' });
+  assert.deepEqual(tipos(m.components), [10, 12, 17]);
+  assert.equal(m.components[0].content, '@everyone');
+});
+
 test('sem miniatura o texto fica solto na caixa', () => {
   const m = montarV2({ titulo: 'T', texto: 'x' });
   assert.deepEqual(tipos(m.components), [17]);
