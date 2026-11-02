@@ -71,3 +71,8 @@ test('texto com mais de 4000 caracteres dá erro', () => {
   assert.equal(tamanhoTexto(m.components), 4001);
   assert.deepEqual(validarV2(m), ['O texto da mensagem passou de 4000 caracteres (ficou com 4001).']);
 });
+
+test('texto de baixo vem depois do card e antes dos botões', () => {
+  const m = montarV2({ fora: 'Parabéns', card: 'attachment://card.png', abaixo: '-# ganhou o cargo', linhas: linhas(1, 1) });
+  assert.deepEqual(tipos(m.components), [10, 12, 10, 1]);
+});

@@ -23,3 +23,11 @@ test('nome comprido: a fonte encolhe até caber', () => {
   const t = ajustarFonte(medir, 'x'.repeat(60), 56, 1000);
   assert.ok(t < 56 && medir('x'.repeat(60), t) <= 1000);
 });
+
+test('card de aniversário é um PNG 1200×520, com ou sem foto', async () => {
+  const { desenharCardNiver } = await import('../lib/card.js');
+  for (const avatar of [null, FUNDO]) {
+    const png = await desenharCardNiver({ fundo: FUNDO, avatar, nome: 'rafa_cringe', topo: 'PARABÉNS!', baixo: '22 ANOS DE PURA RESENHA' });
+    assert.deepEqual(tamanho(png), [1200, 520]);
+  }
+});
