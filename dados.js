@@ -11,120 +11,160 @@ const ARQ_PAINEIS = new URL('paineis.json', PASTA);
 
 export const ESTILOS = ['Primary', 'Secondary', 'Success', 'Danger'];
 export const MAX_CORES = 24; // o /cor aceita 25 opções e uma é "Tirar a cor"
+export const MAX_FINAIS = 4;
 const HEX = /^#[0-9a-f]{6}$/i;
 const EMOJI_SERVIDOR = /^<a?:\w{2,32}:\d{15,25}>$/;
 const ID = /^\d{15,25}$/;
+// Imagem: '' = padrão do lugar, 'none' = sem imagem, modelo da galeria, link https ou arquivo enviado pelo painel
+const REF_IMAGEM = /^(|none|banners\/[\w\-/.]+\.(gif|jpe?g|png|webp)|https:\/\/\S+|anexo:[0-9a-f]{16})$/i;
 
 export const PADRAO = {
   servidorId: null,
   cores: [
-    { nome: 'Vermelho', emoji: '🔴', hex: '#E74C3C', estilo: 'Secondary' },
-    { nome: 'Laranja', emoji: '🟠', hex: '#E67E22', estilo: 'Secondary' },
-    { nome: 'Amarelo', emoji: '🟡', hex: '#F1C40F', estilo: 'Secondary' },
-    { nome: 'Verde', emoji: '🟢', hex: '#2ECC71', estilo: 'Secondary' },
-    { nome: 'Azul', emoji: '🔵', hex: '#3498DB', estilo: 'Secondary' },
-    { nome: 'Roxo', emoji: '🟣', hex: '#9B59B6', estilo: 'Secondary' },
-    { nome: 'Rosa', emoji: '🌸', hex: '#FF6EC7', estilo: 'Secondary' },
-    { nome: 'Branco', emoji: '⚪', hex: '#FFFFFF', estilo: 'Secondary' },
-  ],
+    ['Vermelho', '🔴', '#E74C3C'], ['Laranja', '🟠', '#E67E22'], ['Amarelo', '🟡', '#F1C40F'], ['Verde', '🟢', '#2ECC71'],
+    ['Azul', '🔵', '#3498DB'], ['Roxo', '🟣', '#9B59B6'], ['Rosa', '🌸', '#FF6EC7'], ['Preto', '⚫', '#111111'],
+    ['Branco', '⚪', '#FFFFFF'], ['Cinza', '🩶', '#95A5A6'], ['Marrom', '🟤', '#8B5A2B'],
+  ].map(([nome, emoji, hex]) => ({ nome, emoji, hex, estilo: 'Secondary' })),
   painel: {
-    titulo: '🎨 Cor do nome',
-    descricao: 'Escolha a cor do seu nome no servidor clicando num botão abaixo.\nÉ uma cor por vez: escolher outra troca automaticamente.',
+    titulo: '🎨 Escolha sua cor',
+    descricao: 'Clique num botão pra pintar seu nome. Clicar de novo na mesma cor tira ela.',
     listarCores: true,
-    campos: [{ nome: 'Como tirar', valor: 'Clique de novo na sua cor ou em **Tirar cor**. Também dá pelo comando `/cor`.', inline: false }],
-    rodape: 'Painel de cores',
+    campos: [{ nome: 'Como funciona', valor: 'Clicou, pintou. Clicou de novo, tirou. Também dá pelo comando `/cor`.' }],
+    rodape: 'Manda Chuva',
     corDoEmbed: '#5865F2',
-    imagem: '',
-    miniatura: '',
+    imgs: { topo: '', mini: '', imagem: '', finais: [] },
   },
   botoes: { porLinha: 4, remover: { ativo: true, texto: 'Tirar cor', emoji: '❌', estilo: 'Danger' } },
-  mensagens: { ganhou: 'Pronto! Seu nome agora está {cor}.', removeu: 'Cor removida. Seu nome voltou ao padrão.' },
+  mensagens: { ganhou: 'Pronto! Agora você é {cor}.', removeu: 'Tirei {cor} de você.' },
 };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 const txt = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
+const hex = (v) => (typeof v === 'string' ? v.trim().toUpperCase() : '');
 const emojiValido = (e) => EMOJI_SERVIDOR.test(e) || (e.length <= 16 && !/[\sA-Za-z<>:]/.test(e));
-const linkValido = (u) => /^https?:\/\/\S+$/i.test(u);
+const FORMATO_COR = 'use o formato #RRGGBB';
 
-/** Confere e arruma uma config. Devolve { cfg, erros }, com os erros em português prontos pra mostrar. */
-export function normalizar(entrada) {
-  const e = obj(entrada);
-  const p = obj(e.painel);
-  const b = obj(e.botoes);
-  const r = obj(b.remover);
-  const m = obj(e.mensagens);
-  const erros = [];
+/** Confere uma imagem (ver REF_IMAGEM) */
+function imagem(v, rotulo, erros) {
+  const ref = typeof v === 'string' ? v.trim() : '';
+  if (!REF_IMAGEM.test(ref)) erros.push(`${rotulo}: o link precisa começar com https://.`);
+  return ref;
+}
 
-  const cores = (Array.isArray(e.cores) ? e.cores : []).map((bruta, i) => {
-    const c = obj(bruta);
-    const cor = {
-      nome: txt(c.nome, 80),
-      emoji: txt(c.emoji, 100),
-      hex: typeof c.hex === 'string' ? c.hex.trim().toUpperCase() : '#99AAB5',
-      estilo: ESTILOS.includes(c.estilo) ? c.estilo : 'Secondary',
-      cargoId: typeof c.cargoId === 'string' && ID.test(c.cargoId) ? c.cargoId : null,
+/** Banner do topo, miniatura, imagem grande e imagens no final de uma mensagem */
+export function imagens(v, erros) {
+  const i = obj(v);
+  const finais = Array.isArray(i.finais) ? i.finais : [];
+  if (finais.length > MAX_FINAIS) erros.push(`Até ${MAX_FINAIS} imagens no final.`);
+  return {
+    topo: imagem(i.topo, 'Banner do topo', erros),
+    mini: imagem(i.mini, 'Miniatura', erros),
+    imagem: imagem(i.imagem, 'Imagem grande', erros),
+    finais: finais.slice(0, MAX_FINAIS).map((f, n) => imagem(f, `Imagem final ${n + 1}`, erros)),
+  };
+}
+
+// Cada pedaço da config tem seu conferidor. Pedaço que não veio na entrada fica como está: a interface
+// antiga, ainda em cache no navegador de alguém, não apaga o que ela não conhece.
+const SECOES = {
+  servidorId: (v) => (typeof v === 'string' && ID.test(v) ? v : null),
+
+  cores(lista, atuais, erros) {
+    const anteriores = Array.isArray(atuais) ? atuais : [];
+    const cores = (Array.isArray(lista) ? lista : []).map((bruta, i) => {
+      const c = obj(bruta);
+      const nome = txt(c.nome, 80);
+      // A interface antiga não manda os campos novos: herda da mesma cor na config atual
+      const par = anteriores.find((a) => c.cargoId && a.cargoId === c.cargoId) ?? anteriores.find((a) => a.nome.toLowerCase() === nome.toLowerCase()) ?? {};
+      const de = (k) => (k in c ? c[k] : par[k]);
+      const cor = {
+        nome,
+        emoji: txt(c.emoji, 100),
+        hex: typeof c.hex === 'string' ? hex(c.hex) : '#99AAB5',
+        tipo: de('tipo') === 'degrade' ? 'degrade' : 'solida',
+        hex2: hex(de('hex2')),
+        estilo: ESTILOS.includes(c.estilo) ? c.estilo : 'Secondary',
+        botaoModo: ['cargo', 'propria'].includes(de('botaoModo')) ? de('botaoModo') : 'discord',
+        botaoHex: hex(de('botaoHex')),
+        cargoId: typeof c.cargoId === 'string' && ID.test(c.cargoId) ? c.cargoId : null,
+      };
+      const quem = nome ? `"${nome}"` : `A cor nº ${i + 1}`;
+      if (!nome) erros.push(`A cor nº ${i + 1} está sem nome.`);
+      if (!HEX.test(cor.hex)) erros.push(`${quem}: cor inválida (${FORMATO_COR}).`);
+      else if (cor.hex === '#000000') erros.push(`${quem}: #000000 é "sem cor" no Discord. Para preto use #010101.`);
+      if (cor.tipo === 'degrade' && !HEX.test(cor.hex2)) erros.push(`${quem}: a cor final do degradê está inválida (${FORMATO_COR}).`);
+      if (cor.tipo === 'solida' && !HEX.test(cor.hex2)) cor.hex2 = '';
+      if (cor.botaoModo === 'propria' && !HEX.test(cor.botaoHex)) erros.push(`${quem}: a cor do botão está inválida (${FORMATO_COR}).`);
+      if (cor.botaoModo !== 'propria' && !HEX.test(cor.botaoHex)) cor.botaoHex = '';
+      if (cor.emoji && !emojiValido(cor.emoji)) erros.push(`${quem}: emoji inválido.`);
+      return cor;
+    });
+    if (!cores.length) erros.push('Coloque pelo menos uma cor.');
+    if (cores.length > MAX_CORES) erros.push(`O máximo é ${MAX_CORES} cores.`);
+    const nomes = cores.map((c) => c.nome.toLowerCase()).filter(Boolean);
+    if (new Set(nomes).size !== nomes.length) erros.push('Tem duas cores com o mesmo nome.');
+    const cargos = cores.map((c) => c.cargoId).filter(Boolean);
+    if (new Set(cargos).size !== cargos.length) erros.push('Tem duas cores usando o mesmo cargo.');
+    return cores;
+  },
+
+  painel(bruto, atual, erros) {
+    const p = obj(bruto);
+    const campos = (Array.isArray(p.campos) ? p.campos : []).slice(0, 25).map((f) => ({ nome: txt(obj(f).nome, 256), valor: txt(obj(f).valor, 1024) }));
+    campos.forEach((f, i) => {
+      if (!f.nome || !f.valor) erros.push(`O campo nº ${i + 1} do embed precisa de título e texto.`);
+    });
+    const imgs = imagens('imgs' in p ? p.imgs : (obj(atual).imgs ?? PADRAO.painel.imgs), erros);
+    // Config da versão 2: imagem e miniatura eram links soltos no painel
+    if (!('imgs' in p)) {
+      if (txt(p.imagem, 2000)) imgs.imagem = imagem(p.imagem, 'Imagem grande', erros);
+      if (txt(p.miniatura, 2000)) imgs.mini = imagem(p.miniatura, 'Miniatura', erros);
+    }
+    const painel = {
+      titulo: txt(p.titulo, 256),
+      descricao: txt(p.descricao, 4000),
+      listarCores: p.listarCores !== false,
+      campos,
+      rodape: txt(p.rodape, 2048),
+      corDoEmbed: typeof p.corDoEmbed === 'string' && HEX.test(p.corDoEmbed) ? hex(p.corDoEmbed) : '#5865F2',
+      imgs,
     };
-    const quem = cor.nome ? `"${cor.nome}"` : `A cor nº ${i + 1}`;
-    if (!cor.nome) erros.push(`A cor nº ${i + 1} está sem nome.`);
-    if (!HEX.test(cor.hex)) erros.push(`${quem}: cor inválida (use o formato #RRGGBB).`);
-    else if (cor.hex === '#000000') erros.push(`${quem}: #000000 é "sem cor" no Discord. Para preto use #010101.`);
-    if (cor.emoji && !emojiValido(cor.emoji)) erros.push(`${quem}: emoji inválido.`);
-    return cor;
-  });
-  if (!cores.length) erros.push('Coloque pelo menos uma cor.');
-  if (cores.length > MAX_CORES) erros.push(`O máximo é ${MAX_CORES} cores.`);
-  const nomes = cores.map((c) => c.nome.toLowerCase()).filter(Boolean);
-  if (new Set(nomes).size !== nomes.length) erros.push('Tem duas cores com o mesmo nome.');
-  const cargos = cores.map((c) => c.cargoId).filter(Boolean);
-  if (new Set(cargos).size !== cargos.length) erros.push('Tem duas cores usando o mesmo cargo.');
+    if (!painel.titulo && !painel.descricao && !painel.listarCores && !campos.length) erros.push('O embed ficou vazio: coloque pelo menos um título ou uma descrição.');
+    return painel;
+  },
 
-  const campos = (Array.isArray(p.campos) ? p.campos : []).slice(0, 25).map((bruto) => {
-    const f = obj(bruto);
-    return { nome: txt(f.nome, 256), valor: txt(f.valor, 1024), inline: f.inline === true };
-  });
-  campos.forEach((f, i) => {
-    if (!f.nome || !f.valor) erros.push(`O campo nº ${i + 1} do embed precisa de título e texto.`);
-  });
-  const painel = {
-    titulo: txt(p.titulo, 256),
-    descricao: txt(p.descricao, 4096),
-    listarCores: p.listarCores !== false,
-    campos,
-    rodape: txt(p.rodape, 2048),
-    corDoEmbed: typeof p.corDoEmbed === 'string' && HEX.test(p.corDoEmbed) ? p.corDoEmbed.toUpperCase() : '#5865F2',
-    imagem: txt(p.imagem, 2000),
-    miniatura: txt(p.miniatura, 2000),
-  };
-  if (painel.imagem && !linkValido(painel.imagem)) erros.push('O link da imagem precisa começar com http:// ou https://.');
-  if (painel.miniatura && !linkValido(painel.miniatura)) erros.push('O link da miniatura precisa começar com http:// ou https://.');
-  const tamLista = painel.listarCores ? cores.reduce((soma, c) => soma + c.emoji.length + 30, 0) : 0;
-  if (painel.descricao.length + tamLista > 4096) erros.push('A descrição do embed ficou grande demais (junto com a lista de cores).');
-  const total = painel.titulo.length + painel.descricao.length + tamLista + painel.rodape.length + campos.reduce((s, f) => s + f.nome.length + f.valor.length, 0);
-  if (total > 6000) erros.push('O embed passou do limite de 6000 caracteres do Discord.');
-  if (!painel.titulo && !painel.descricao && !painel.listarCores && !campos.length) erros.push('O embed ficou vazio: coloque pelo menos um título ou uma descrição.');
+  botoes(bruto, _atual, erros) {
+    const b = obj(bruto);
+    const r = obj(b.remover);
+    const remover = { ativo: r.ativo !== false, texto: txt(r.texto, 80), emoji: txt(r.emoji, 100), estilo: ESTILOS.includes(r.estilo) ? r.estilo : 'Danger' };
+    if (remover.ativo && !remover.texto && !remover.emoji) erros.push('O botão de tirar a cor precisa de texto ou emoji.');
+    if (remover.emoji && !emojiValido(remover.emoji)) erros.push('Emoji inválido no botão de tirar a cor.');
+    return { porLinha: Math.min(5, Math.max(1, Math.round(Number(b.porLinha)) || 4)), remover };
+  },
 
-  const porLinha = Math.min(5, Math.max(1, Math.round(Number(b.porLinha)) || 4));
-  const remover = {
-    ativo: r.ativo !== false,
-    texto: txt(r.texto, 80),
-    emoji: txt(r.emoji, 100),
-    estilo: ESTILOS.includes(r.estilo) ? r.estilo : 'Danger',
-  };
-  if (remover.ativo && !remover.texto && !remover.emoji) erros.push('O botão de tirar a cor precisa de texto ou emoji.');
-  if (remover.emoji && !emojiValido(remover.emoji)) erros.push('Emoji inválido no botão de tirar a cor.');
-  const linhas = Math.ceil(cores.length / porLinha) + (remover.ativo ? 1 : 0);
-  if (linhas > 5) erros.push(`Botões demais: o Discord aceita até 5 linhas e ficaram ${linhas}. Aumente "botões por linha" ou tire cores.`);
+  mensagens(bruto) {
+    const m = obj(bruto);
+    return { ganhou: txt(m.ganhou, 1500) || PADRAO.mensagens.ganhou, removeu: txt(m.removeu, 1500) || PADRAO.mensagens.removeu };
+  },
+};
 
-  const mensagens = {
-    ganhou: txt(m.ganhou, 1500) || PADRAO.mensagens.ganhou,
-    removeu: txt(m.removeu, 1500) || PADRAO.mensagens.removeu,
-  };
-  const servidorId = typeof e.servidorId === 'string' && ID.test(e.servidorId) ? e.servidorId : null;
-  return { cfg: { servidorId, cores, painel, botoes: { porLinha, remover }, mensagens }, erros };
+/**
+ * Confere e arruma uma config. Devolve { cfg, erros }, com os erros em português prontos pra mostrar.
+ * Pedaço que não veio em "entrada" continua como está em "atual".
+ */
+export function normalizar(entrada, atual = configAtual) {
+  const e = obj(entrada);
+  const a = obj(atual);
+  const erros = [];
+  const cfg = {};
+  for (const [chave, conferir] of Object.entries(SECOES)) {
+    cfg[chave] = chave in e || !(chave in a) ? conferir(chave in e ? e[chave] : PADRAO[chave], a[chave], erros) : structuredClone(a[chave]);
+  }
+  return { cfg, erros };
 }
 
 // ---------- Onde fica salvo ----------
-let configAtual = normalizar(PADRAO).cfg;
+let configAtual = normalizar(PADRAO, {}).cfg;
 let paineisAtuais = [];
 /** @type {{ id: string, token: string } | null} */
 let gist = null;
