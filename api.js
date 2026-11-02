@@ -20,6 +20,9 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/anexo': (corpo) => api.anexo(corpo),
     'POST /api/portaria/testar': (corpo) => api.testarPortaria(corpo?.evento),
     'POST /api/aniversarios': (corpo) => api.aniversario(corpo),
+    'GET /api/membros': (_, url) => api.membros(url.searchParams),
+    'POST /api/membros/acao': (corpo) => api.acaoMembro(corpo),
+    'POST /api/ocorrencias/desfazer': (corpo) => api.desfazer(corpo),
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
   const limites = { 'POST /api/anexo': 12_000_000 };

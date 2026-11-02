@@ -23,6 +23,7 @@ import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
 import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
 import { midia, PADROES } from './lib/imagens.js';
+import { anotar, ativos, consequencia, darAviso, filtrarMembros, lerAvisos, lerOcorrencias, linhaDoRegistro, marcarDesfeita, pagina, SILENCIOS, TIPOS, tirarAviso } from './lib/moderacao.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
 import { NOVIDADES } from './lib/novidades.js';
@@ -43,7 +44,13 @@ const NOMES_PERMISSOES = [
   [P.ManageRoles, 'Gerenciar cargos'],
   [P.ViewAuditLog, 'Ver o registro de auditoria'],
 ];
-export const PERMISSOES = NOMES_PERMISSOES.map(([p]) => p);
+// Aba Cargos › Membros e Moderação (o painel avisa à parte se faltar)
+const NOMES_MODERACAO = [
+  [P.KickMembers, 'Expulsar membros'],
+  [P.ModerateMembers, 'Silenciar membros'],
+  [P.BanMembers, 'Banir membros'],
+];
+export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO].map(([p]) => p);
 
 // Cargo com qualquer uma dessas permissões nunca é dado por botão (evita alguém virar admin sem querer)
 const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChannels, P.ManageMessages,
@@ -334,6 +341,126 @@ async function comFoto(guild, lista) {
     const quem = guild.members.cache.get(p.userId) ?? client.users.cache.get(p.userId);
     return { ...p, nome: guild.members.cache.get(p.userId)?.displayName ?? p.nome, avatar: quem?.displayAvatarURL({ size: 64 }) ?? null };
   });
+}
+
+// ---------- Membros e moderação (aba Cargos) ----------
+const POR_PAINEL = 'pelo painel';
+
+/** Membro do jeito que a aba Membros mostra */
+function descreverMembro(m, avisos = lerAvisos(), agora = Date.now()) {
+  const ate = m.communicationDisabledUntilTimestamp;
+  return {
+    id: m.id,
+    nome: m.displayName,
+    usuario: m.user.username,
+    avatar: m.displayAvatarURL({ size: 64 }),
+    entrou: m.joinedTimestamp,
+    cargos: [...m.roles.cache.values()].filter((r) => r.id !== m.guild.id).sort((a, b) => b.position - a.position).map((r) => r.id),
+    cor: m.displayColor ? intParaHex(m.displayColor) : null,
+    avisos: ativos(avisos, m.id, agora).length,
+    silenciadoAte: ate && ate > agora ? ate : null,
+    bot: m.user.bot,
+    podeSilenciar: m.moderatable,
+    podeExpulsar: m.kickable,
+  };
+}
+
+/** Anota no livro e manda a linha pro canal de registros (se tiver um) */
+async function registrar(guild, o) {
+  const canalId = dados.config().moderacao.canalId;
+  const canal = canalId ? guild.channels.cache.get(canalId) : null;
+  if (canal?.isTextBased()) await canal.send({ content: linhaDoRegistro(o), allowedMentions: { parse: [] } }).catch((erro) => console.error('Canal de registros:', explicarErro(erro)));
+  return o;
+}
+
+/** Expulsão, ban ou silêncio feito por alguém no Discord */
+async function anotarDoDiscord(tipo, d) {
+  const user = d.usuario ?? (await client.users.fetch(d.alvoId).catch(() => null));
+  if (!user) return;
+  const executor = d.executorId ? await d.guild.members.fetch(d.executorId).catch(() => null) : null;
+  const motivo = d.motivo ? `: ${d.motivo}` : '';
+  const oque = tipo === 'ban' ? `foi banido${motivo}` : tipo === 'expulsao' ? `foi expulso${motivo}` : `foi silenciado por ${duracaoTexto(d.ate.getTime() - Date.now())}${motivo}`;
+  await registrar(d.guild, anotar({
+    tipo: TIPOS[tipo], userId: user.id, nome: user.globalName ?? user.username, oque,
+    por: executor ? `por ${executor.displayName}` : 'pelo Discord',
+    desfazer: tipo === 'ban' ? 'ban' : tipo === 'silencio' ? 'silencio' : null,
+  }));
+}
+
+/** Erro do Discord vira erro 400 com a explicação em português */
+const noDiscord = (promessa) => promessa.catch((erro) => { throw comStatus(400, explicarErro(erro)); });
+
+/** Silencia por ms (o motivo vai pro registro de auditoria) */
+async function silenciar(guild, membro, ms, texto, motivo, por) {
+  if (!membro.moderatable) throw comStatus(400, `Não consigo silenciar ${membro.displayName}: é admin, dono do servidor ou está acima do meu cargo.`);
+  await noDiscord(membro.timeout(ms, motivo || 'Painel do Manda Chuva'));
+  await registrar(guild, anotar({ tipo: TIPOS.silencio, userId: membro.id, nome: membro.displayName, oque: `foi silenciado por ${texto}${motivo ? `: ${motivo}` : ''}`, por, desfazer: 'silencio' }));
+}
+
+async function expulsar(guild, membro, motivo, por) {
+  if (!membro.kickable) throw comStatus(400, `Não consigo expulsar ${membro.displayName}: é admin, dono do servidor ou está acima do meu cargo.`);
+  await noDiscord(membro.kick(motivo || 'Painel do Manda Chuva'));
+  await registrar(guild, anotar({ tipo: TIPOS.expulsao, userId: membro.id, nome: membro.displayName, oque: `foi expulso${motivo ? `: ${motivo}` : ''}`, por }));
+}
+
+/** Aviso + o que acontece ao chegar no limite (silenciar 1 h ou expulsar). Devolve o texto pro painel. */
+async function avisar(guild, membro, motivo, por) {
+  const regras = dados.config().moderacao;
+  const a = darAviso({ userId: membro.id, nome: membro.displayName, motivo, por });
+  const qtd = ativos(lerAvisos(), membro.id).length;
+  const conta = `${qtd}${regras.expulsar ? `/${regras.expulsar}` : ''}`;
+  await registrar(guild, anotar({ tipo: TIPOS.aviso, userId: membro.id, nome: membro.displayName, oque: `levou um aviso${motivo ? `: ${motivo}` : ''} (${conta})`, por, desfazer: `aviso:${a.id}` }));
+  await membro.send(`⚠️ Você levou um aviso no servidor **${guild.name}**${motivo ? `: ${motivo}` : ''}. Avisos valendo: ${conta}. Cada aviso some depois de 30 dias.`).catch(() => {});
+  // O aviso já valeu; se a consequência falhar, o painel conta as duas coisas
+  const c = consequencia(qtd, regras);
+  try {
+    if (c === 'expulsar' && membro.kickable) {
+      await expulsar(guild, membro, `Juntou ${qtd} avisos`, 'automático');
+      return `${membro.displayName} levou o aviso ${conta} e foi expulso.`;
+    }
+    if (c === 'silenciar' && membro.moderatable) {
+      await silenciar(guild, membro, SILENCIOS['1h'][0], SILENCIOS['1h'][1], `Juntou ${qtd} avisos`, 'automático');
+      return `${membro.displayName} levou o aviso ${conta} e ficou 1 hora em silêncio.`;
+    }
+  } catch (erro) {
+    return `${membro.displayName} levou o aviso ${conta}, mas não consegui ${c === 'expulsar' ? 'expulsar' : 'silenciar'}: ${erro.message}`;
+  }
+  return `${membro.displayName} levou um aviso (${conta}).`;
+}
+
+/** Ações da aba Membros: dar/tirar cargo, avisar, silenciar, tirar o silêncio e expulsar */
+async function moderar(guild, membro, { acao, cargoId, motivo, duracao }) {
+  if (membro.id === client.user.id) throw comStatus(400, 'Em mim não, né.');
+  if (acao === 'dar' || acao === 'tirar') {
+    const cargo = guild.roles.cache.get(String(cargoId ?? ''));
+    if (!cargo || cargo.id === guild.id) throw comStatus(400, 'Esse cargo não existe mais: atualize a página.');
+    if (!cargo.editable) throw comStatus(400, `Não consigo mexer em "${cargo.name}": ${cargo.managed ? 'é de uma integração' : 'está acima do meu cargo'}.`);
+    if (acao === 'tirar') {
+      await noDiscord(membro.roles.remove(cargo, 'Painel do Manda Chuva'));
+      return `Tirei ${cargo.name} de ${membro.displayName}.`;
+    }
+    // Cor nova: tira as outras cores, igual ao botão do painel
+    const cores = new Set(dados.config().cores.map((c) => c.cargoId).filter(Boolean));
+    const outras = cores.has(cargo.id) ? [...membro.roles.cache.keys()].filter((id) => cores.has(id) && id !== cargo.id) : [];
+    if (outras.length) await noDiscord(membro.roles.remove(outras, 'Painel do Manda Chuva: trocou de cor'));
+    await noDiscord(membro.roles.add(cargo, 'Painel do Manda Chuva'));
+    return `${membro.displayName} ganhou ${cargo.name}.`;
+  }
+  if (acao === 'avisar') return avisar(guild, membro, motivo, POR_PAINEL);
+  if (acao === 'silenciar') {
+    const [ms, texto] = SILENCIOS[duracao] ?? SILENCIOS['10min'];
+    await silenciar(guild, membro, ms, texto, motivo, POR_PAINEL);
+    return `${membro.displayName} ficou em silêncio por ${texto}.`;
+  }
+  if (acao === 'dessilenciar') {
+    await noDiscord(membro.timeout(null, 'Painel do Manda Chuva'));
+    return `${membro.displayName} pode falar de novo.`;
+  }
+  if (acao === 'expulsar') {
+    await expulsar(guild, membro, motivo, POR_PAINEL);
+    return `${membro.displayName} foi expulso.`;
+  }
+  throw comStatus(400, 'Ação desconhecida.');
 }
 
 // ---------- Hierarquia (aba Cargos) ----------
@@ -628,6 +755,7 @@ function infoServidor(guild) {
     podeMencionarTodos: !!eu?.permissions.has(P.MentionEveryone),
     membros: guild.memberCount,
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
+    moderacaoFaltando: NOMES_MODERACAO.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     hierarquia: {
       cargoDoBot: eu?.roles.highest.name ?? '?',
       temPermissao: !!eu?.permissions.has(P.ManageRoles),
@@ -696,6 +824,10 @@ async function postarPortaria(tipo, d) {
   const cfg = dados.config();
   const ev = cfg.portaria[tipo];
   const guild = d.guild;
+  // O que o próprio bot faz já entrou no livro na hora (com mais detalhe)
+  if (TIPOS[tipo] && tipo !== 'aviso' && !soPainel && guild?.id === cfg.servidorId && d.executorId !== client.user?.id) {
+    await anotarDoDiscord(tipo, d).catch((erro) => console.error('Livro de ocorrências:', erro.message));
+  }
   if (soPainel || !ev.on || !ev.canalId || !guild || guild.id !== cfg.servidorId) return;
   const canal = guild.channels.cache.get(ev.canalId);
   if (!canal?.isTextBased()) return;
@@ -739,6 +871,7 @@ export const api = {
       servidor: guild ? infoServidor(guild) : null,
       noticias: NOVIDADES,
       aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
+      ocorrencias: guild ? lerOcorrencias().slice(0, 100) : [],
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -781,6 +914,52 @@ export const api = {
   lerAnexo: (id) => lerAnexo(id),
 
   // Lista de aniversários: adicionar alguém na mão ou tirar da lista (vale na hora, não espera o Salvar)
+  // Aba Membros: busca, filtro por cargo e página (6 por página). Sem a intent "Server Members", só com busca.
+  async membros(params) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const q = String(params.get('q') ?? '').trim();
+    const cargo = String(params.get('cargo') ?? '');
+    let membros;
+    if (temMembros()) membros = [...guild.members.cache.values()];
+    else if (q) membros = [...(await noDiscord(guild.members.search({ query: q.replace(/^@/, ''), limit: 100 }))).values()];
+    else return { itens: [], pagina: 1, paginas: 1, total: 0, precisaBusca: true };
+    const lista = filtrarMembros(membros.map((m) => ({ m, nome: m.displayName, usuario: m.user.username, cargos: [...m.roles.cache.keys()] })), { q, cargo });
+    const p = pagina(lista, params.get('pagina'));
+    const avisos = lerAvisos();
+    return { ...p, itens: p.itens.map((x) => descreverMembro(x.m, avisos)) };
+  },
+
+  async acaoMembro(corpo) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const membro = await guild.members.fetch(String(corpo?.userId ?? '')).catch(() => null);
+    if (!membro) throw comStatus(404, 'Essa pessoa não está mais no servidor.');
+    const motivo = String(corpo?.motivo ?? '').trim().slice(0, 300);
+    const mensagem = await moderar(guild, membro, { acao: String(corpo?.acao ?? ''), cargoId: corpo?.cargoId, motivo, duracao: corpo?.duracao });
+    await dados.esperarGravacao();
+    const agora = await guild.members.fetch({ user: membro.id, force: true }).catch(() => null);
+    return { ok: true, mensagem, membro: agora ? descreverMembro(agora) : null };
+  },
+
+  // Livro de ocorrências: desfaz aviso, silêncio ou ban (expulsão não tem volta)
+  async desfazer(corpo) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const o = lerOcorrencias().find((x) => x.id === corpo?.id);
+    if (!o) throw comStatus(404, 'Essa ocorrência não está mais no livro.');
+    if (o.desfeito) return { ok: true, mensagem: 'Já estava desfeito.' };
+    if (!o.desfazer) throw comStatus(400, 'Essa não tem volta: quem foi expulso só volta com convite.');
+    if (o.desfazer.startsWith('aviso:')) tirarAviso(o.desfazer.slice(6));
+    else if (o.desfazer === 'silencio') {
+      const membro = await guild.members.fetch(o.userId).catch(() => null);
+      if (membro?.isCommunicationDisabled()) await noDiscord(membro.timeout(null, 'Desfeito no painel do Manda Chuva'));
+    } else if (o.desfazer === 'ban') await noDiscord(guild.bans.remove(o.userId, 'Desfeito no painel do Manda Chuva'));
+    marcarDesfeita(o.id);
+    await dados.esperarGravacao();
+    return { ok: true, mensagem: `Desfeito: ${o.nome} ${o.tipo === 'AVISO' ? 'ficou com um aviso a menos' : o.tipo === 'BAN' ? 'pode voltar pro servidor' : 'pode falar de novo'}.` };
+  },
+
   async aniversario(corpo) {
     const guild = servidor();
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');

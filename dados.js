@@ -75,6 +75,20 @@ PADRAO.niver = {
   on: false, canalId: null, hora: '09:00', msg: 'Hoje é aniversário de {usuario}! {idade} anos e ainda não trancou o curso. Parabéns!',
   topo: 'PARABÉNS!', baixo: '{idade} ANOS DE PURA RESENHA', fundo: '', idade: true, cargo: true, dm: false, botao: true,
 };
+// Moderação (lib/moderacao.js): quantos avisos silenciam (1 h) e expulsam (0 = nunca), canal de registros e auto-mod
+PADRAO.moderacao = {
+  silenciar: 3,
+  expulsar: 5,
+  canalId: null,
+  automod: {
+    palavrao: { on: false, acao: 'apagar' },
+    spam: { on: false, acao: 'silenciar' },
+    convites: { on: false, acao: 'avisar' },
+    mencoes: { on: false, acao: 'silenciar' },
+    links: { on: false, acao: 'apagar' },
+  },
+};
+export const ACOES_AUTOMOD = ['apagar', 'avisar', 'silenciar', 'expulsar'];
 export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
 export const DURACOES = ['10min', '1h', '1d', '7d', 'sem'];
 
@@ -293,6 +307,22 @@ const SECOES = {
       cargo: sim(n.cargo, p.cargo),
       dm: sim(n.dm, p.dm),
       botao: sim(n.botao, p.botao),
+    };
+  },
+
+  moderacao(bruto) {
+    const m = obj(bruto), p = PADRAO.moderacao;
+    const limite = (v, padrao) => (Number.isFinite(v) ? Math.min(20, Math.max(0, Math.trunc(v))) : padrao);
+    const automod = {};
+    for (const [k, padrao] of Object.entries(p.automod)) {
+      const a = obj(obj(m.automod)[k]);
+      automod[k] = { on: typeof a.on === 'boolean' ? a.on : padrao.on, acao: ACOES_AUTOMOD.includes(a.acao) ? a.acao : padrao.acao };
+    }
+    return {
+      silenciar: limite(m.silenciar, p.silenciar),
+      expulsar: limite(m.expulsar, p.expulsar),
+      canalId: typeof m.canalId === 'string' && ID.test(m.canalId) ? m.canalId : null,
+      automod,
     };
   },
 };
