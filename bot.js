@@ -25,7 +25,7 @@ import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
 import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
 import { midia, PADROES } from './lib/imagens.js';
-import { anotar, ativos, consequencia, darAviso, filtrarMembros, lerAvisos, lerOcorrencias, linhaDoRegistro, marcarDesfeita, pagina, SILENCIOS, TIPOS, tirarAviso } from './lib/moderacao.js';
+import { anotar, ativos, consequencia, darAviso, filtrarMembros, lerAvisos, lerOcorrencias, linhaDoRegistro, marcarDesfeita, pagina, semPrazo, SILENCIOS, TIPOS, tirarAviso } from './lib/moderacao.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
 import { NOVIDADES } from './lib/novidades.js';
@@ -364,6 +364,7 @@ function descreverMembro(m, avisos = lerAvisos(), agora = Date.now()) {
     cor: m.displayColor ? intParaHex(m.displayColor) : null,
     avisos: ativos(avisos, m.id, agora).length,
     silenciadoAte: ate && ate > agora ? ate : null,
+    semPrazo: (lerRegistro().semPrazo ?? []).includes(m.id),
     bot: m.user.bot,
     podeSilenciar: m.moderatable,
     podeExpulsar: m.kickable,
@@ -399,7 +400,7 @@ const noDiscord = (promessa) => promessa.catch((erro) => { throw comStatus(400, 
 async function silenciar(guild, membro, ms, texto, motivo, por) {
   if (!membro.moderatable) throw comStatus(400, `Não consigo silenciar ${membro.displayName}: é admin, dono do servidor ou está acima do meu cargo.`);
   await noDiscord(membro.timeout(ms, motivo || 'Painel do Manda Chuva'));
-  await registrar(guild, anotar({ tipo: TIPOS.silencio, userId: membro.id, nome: membro.displayName, oque: `foi silenciado por ${texto}${motivo ? `: ${motivo}` : ''}`, por, desfazer: 'silencio' }));
+  await registrar(guild, anotar({ tipo: TIPOS.silencio, userId: membro.id, nome: membro.displayName, oque: `foi silenciado ${texto === SILENCIOS.sem[1] ? texto : `por ${texto}`}${motivo ? `: ${motivo}` : ''}`, por, desfazer: 'silencio' }));
 }
 
 async function expulsar(guild, membro, motivo, por) {
@@ -436,6 +437,51 @@ async function depoisDoAviso(guild, membro, qtd, conta) {
     return `${membro.displayName} levou o aviso ${conta}, mas não consegui ${c === 'expulsar' ? 'expulsar' : 'silenciar'}: ${erro.message}`;
   }
   return null;
+}
+
+// ---------- Silêncio sem prazo ----------
+/** Põe ou tira a pessoa da lista do silêncio sem prazo (fica no registro) */
+async function marcarSemPrazo(userId, sim) {
+  const lista = lerRegistro().semPrazo ?? [];
+  if (sim === lista.includes(userId)) return;
+  await salvarRegistro({ semPrazo: sim ? [...lista, userId] : lista.filter((id) => id !== userId) });
+}
+
+/**
+ * O Discord só silencia 28 dias por vez: renova antes de acabar. Quem teve o silêncio tirado no Discord
+ * sai da lista; quem saiu do servidor fica (se voltar, o silêncio volta junto).
+ */
+async function cuidarDosSilencios(guild) {
+  const lista = lerRegistro().semPrazo ?? [];
+  const fica = [];
+  for (const userId of lista) {
+    const membro = await guild.members.fetch(userId).catch(() => null);
+    if (!membro) {
+      fica.push(userId);
+      continue;
+    }
+    const s = semPrazo(membro.communicationDisabledUntilTimestamp);
+    if (s === 'acabou') continue;
+    fica.push(userId);
+    if (s === 'renovar' && membro.moderatable) await membro.timeout(SILENCIOS.sem[0], 'Silêncio sem prazo (renovado)').catch((erro) => console.error('Silêncio sem prazo:', explicarErro(erro)));
+  }
+  if (fica.length !== lista.length) await salvarRegistro({ semPrazo: fica });
+}
+
+/** Saiu e voltou pra fugir do silêncio sem prazo: volta silenciado */
+async function voltouSilenciado(membro) {
+  if (soPainel || membro.guild.id !== dados.config().servidorId || !(lerRegistro().semPrazo ?? []).includes(membro.id) || !membro.moderatable) return;
+  await membro.timeout(SILENCIOS.sem[0], 'Voltou com silêncio sem prazo');
+}
+
+/** A cada 6 horas: renova silêncios sem prazo e atualiza as regras do auto-mod (convites novos do servidor) */
+async function manutencao() {
+  const guild = servidor();
+  if (!guild || soPainel) return;
+  await cuidarDosSilencios(guild);
+  const rel = [];
+  await sincronizarAutomod(guild, dados.config(), rel);
+  if (rel.length) console.log('Auto-mod:', rel.join(' | '));
 }
 
 // ---------- Auto-moderação ----------
@@ -487,7 +533,8 @@ async function sincronizarAutomod(guild, cfg, rel) {
     const convites = am.convites.on ? await convitesDaCasa(guild) : [];
     const depois = { ...antes };
     for (const k of NATIVAS) {
-      const atual = antes[k] ? existentes.get(antes[k].id) : undefined;
+      // Se o registro se perdeu, acha a regra pelo nome (senão criava outra igual)
+      const atual = (antes[k] && existentes.get(antes[k].id)) || existentes.find((r) => r.creatorId === client.user.id && r.name === `Manda Chuva · ${NOMES[k]}`);
       try {
         const ligar = am[k].on && !(k === 'palavrao' && !cfg.moderacao.palavras.length);
         if (am[k].on && !ligar) rel.push('⚠️ Filtro de palavrões ligado, mas a lista está vazia: não criei a regra.');
@@ -498,7 +545,7 @@ async function sincronizarAutomod(guild, cfg, rel) {
         }
         const regra = regraDoDiscord(k, { acao: am[k].acao, palavras: cfg.moderacao.palavras, convites, isentos });
         const marca = JSON.stringify(regra);
-        if (atual && antes[k].marca === marca) continue;
+        if (atual && antes[k]?.id === atual.id && antes[k].marca === marca) continue;
         // O tipo do gatilho não muda depois de criada
         const { triggerType, ...semGatilho } = regra;
         const feita = atual ? await atual.edit({ ...semGatilho, reason: motivo }) : await guild.autoModerationRules.create({ ...regra, reason: motivo });
@@ -569,10 +616,13 @@ async function moderar(guild, membro, { acao, cargoId, motivo, duracao }) {
   if (acao === 'silenciar') {
     const [ms, texto] = SILENCIOS[duracao] ?? SILENCIOS['10min'];
     await silenciar(guild, membro, ms, texto, motivo, POR_PAINEL);
+    await marcarSemPrazo(membro.id, duracao === 'sem');
+    if (duracao === 'sem') return `${membro.displayName} ficou em silêncio sem prazo (até alguém tirar).`;
     return `${membro.displayName} ficou em silêncio por ${texto}.`;
   }
   if (acao === 'dessilenciar') {
     await noDiscord(membro.timeout(null, 'Painel do Manda Chuva'));
+    await marcarSemPrazo(membro.id, false);
     return `${membro.displayName} pode falar de novo.`;
   }
   if (acao === 'expulsar') {
@@ -1076,6 +1126,7 @@ export const api = {
     else if (o.desfazer === 'silencio') {
       const membro = await guild.members.fetch(o.userId).catch(() => null);
       if (membro?.isCommunicationDisabled()) await noDiscord(membro.timeout(null, 'Desfeito no painel do Manda Chuva'));
+      await marcarSemPrazo(o.userId, false);
     } else if (o.desfazer === 'ban') await noDiscord(guild.bans.remove(o.userId, 'Desfeito no painel do Manda Chuva'));
     marcarDesfeita(o.id);
     await dados.esperarGravacao();
@@ -1192,6 +1243,7 @@ function prepararCliente(c) {
   if (!soPainel) c.on(Events.InteractionCreate, responderInteracao);
   if (!soPainel) c.on(Events.AutoModerationActionExecution, (ex) => tratarAutomod(ex).catch((erro) => console.error('Auto-mod:', erro)));
   if (!soPainel) c.on(Events.MessageCreate, (msg) => contarMensagem(msg).catch((erro) => console.error('Anti-spam:', erro)));
+  if (!soPainel) c.on(Events.GuildMemberAdd, (membro) => voltouSilenciado(membro).catch((erro) => console.error('Silêncio sem prazo:', explicarErro(erro))));
   if (!soPainel) ligarPortaria(c, postarPortaria);
   c.once(Events.ClientReady, async (pronto) => {
     console.log(`✅ Bot online como ${pronto.user.tag} (versão ${VERSAO})${soPainel ? ' (modo só painel: não responde aos botões)' : ''}`);
@@ -1211,6 +1263,8 @@ function prepararCliente(c) {
     if (!soPainel) {
       setTimeout(() => conferirTema().catch(() => {}), 15_000);
       setInterval(() => conferirTema().catch(() => {}), 30 * 60_000);
+      setTimeout(() => manutencao().catch((e) => console.error('Manutenção:', e.message)), 60_000);
+      setInterval(() => manutencao().catch((e) => console.error('Manutenção:', e.message)), 6 * 3_600_000);
     }
     // Com a intent "Server Members", baixa a lista de membros uma vez; depois os eventos mantêm atualizada
     if (pronto.options.intents.has(I.GuildMembers)) {
