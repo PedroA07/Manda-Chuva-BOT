@@ -16,7 +16,10 @@ import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { midia } from './lib/imagens.js';
 import { montarV2 } from './lib/mensagem.js';
+import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
+import { NOVIDADES } from './lib/novidades.js';
 import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel.js';
+import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { VERSAO } from './lib/versao.js';
 
 // Permissões que vão no link de convite (e que o painel confere se o bot tem)
@@ -257,6 +260,38 @@ async function sincronizarCargos(guild, cfg, rel) {
   }
 }
 
+// ---------- Jornal do Campus ----------
+let anunciando = false;
+/**
+ * Posta no canal escolhido as versões que ainda não foram anunciadas (veja lib/noticias.js).
+ * A cópia "só painel" nunca anuncia. @returns {Promise<string[]>} versões postadas
+ */
+async function anunciarNovidades() {
+  const n = dados.config().noticias;
+  const guild = servidor();
+  const canal = n.on && n.canalId && guild ? guild.channels.cache.get(n.canalId) : null;
+  if (soPainel || anunciando || !canal?.isTextBased()) return [];
+  anunciando = true;
+  const vistas = new Set(lerRegistro().noticiasAnunciadas);
+  const postadas = [];
+  try {
+    const { postar, marcar } = paraAnunciar(NOVIDADES, [...vistas], n.quais);
+    for (const noticia of postar) {
+      const { url, arquivos } = await imagensDaMensagem(n.imgs);
+      await canal.send(montarV2({ ...pedacoDaNoticia(noticia, n, { url }), arquivos: arquivos() }));
+      vistas.add(noticia.versao);
+      postadas.push(noticia.versao);
+    }
+    for (const v of marcar) vistas.add(v);
+  } catch (erro) {
+    console.error('Não consegui anunciar a novidade:', explicarErro(erro));
+  } finally {
+    anunciando = false;
+    if (vistas.size !== lerRegistro().noticiasAnunciadas.length) await salvarRegistro({ noticiasAnunciadas: [...vistas] });
+  }
+  return postadas;
+}
+
 /** Edita no Discord os painéis já enviados. @param {import('discord.js').Guild} guild */
 async function atualizarPaineis(guild, rel) {
   const mensagem = await montarMensagem(guild);
@@ -340,6 +375,7 @@ function infoServidor(guild) {
     cargos,
     emojis: guild.emojis.cache.filter((e) => e.available !== false).map((e) => ({ id: e.id, nome: e.name, animado: e.animated, texto: e.toString() })),
     recursos: { degrade: guild.features.includes(GuildFeature.EnhancedRoleColors) },
+    podeMencionarTodos: !!eu?.permissions.has(P.MentionEveryone),
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     hierarquia: {
       cargoDoBot: eu?.roles.highest.name ?? '?',
@@ -368,6 +404,7 @@ export const api = {
         : { online: false, soPainel, versao: VERSAO, recursos },
       servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name })) : [],
       servidor: guild ? infoServidor(guild) : null,
+      noticias: NOVIDADES,
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -396,6 +433,8 @@ export const api = {
       const velho = antes !== cfg.servidorId ? servidor(antes) : null;
       if (velho) await velho.commands.set([]).catch(() => {});
     }
+    const postadas = guild ? await anunciarNovidades() : [];
+    if (postadas.length) rel.push(`Jornal do Campus: ${postadas.map((v) => `v${v}`).join(', ')} anunciada(s) no Discord.`);
     await avisarSeNaoGravou(rel);
     limparAnexos(cfg).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
     return { config: cfg, relatorio: rel };
@@ -472,6 +511,8 @@ function prepararCliente(c) {
     console.log(`🔗 Link para adicionar o bot a um servidor:\n${pronto.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES })}`);
     const cfg = dados.config();
     if (!cfg.servidorId && pronto.guilds.cache.size === 1) dados.salvarConfig({ ...cfg, servidorId: pronto.guilds.cache.firstKey() ?? null });
+    // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
+    setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
     // Com a intent "Server Members", baixa a lista de membros uma vez; depois os eventos mantêm atualizada
     if (pronto.options.intents.has(I.GuildMembers)) {
       for (const guild of pronto.guilds.cache.values()) await guild.members.fetch().catch((erro) => console.error(`Não consegui listar os membros de ${guild.name}:`, explicarErro(erro)));
