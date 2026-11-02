@@ -81,3 +81,13 @@ test('config da moderação: padrão e limites', () => {
   assert.ok(md.palavras.includes('porra'));
   assert.deepEqual(dados.normalizar({ moderacao: { palavras: [' Porra ', 'porra', '', 'x'.repeat(70)] } }, {}).cfg.moderacao.palavras, ['porra', 'x'.repeat(60)]);
 });
+
+test('silêncio sem prazo: 28 dias de cada vez, renova quando faltam menos de 3 dias', () => {
+  assert.deepEqual(m.SILENCIOS.sem, [28 * DIA, 'sem prazo']);
+  const agora = Date.UTC(2026, 10, 2);
+  assert.equal(m.semPrazo(agora + 20 * DIA, agora), 'ok');
+  assert.equal(m.semPrazo(agora + 2 * DIA, agora), 'renovar');
+  // Alguém tirou o silêncio no Discord (ou acabou com o bot desligado): sai da lista
+  assert.equal(m.semPrazo(null, agora), 'acabou');
+  assert.equal(m.semPrazo(agora - 1000, agora), 'acabou');
+});
