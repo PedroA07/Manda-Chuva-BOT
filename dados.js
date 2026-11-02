@@ -36,6 +36,8 @@ export const PADRAO = {
   },
   botoes: { porLinha: 4, remover: { ativo: true, texto: 'Tirar cor', emoji: '❌', estilo: 'Danger' } },
   mensagens: { ganhou: 'Pronto! Agora você é {cor}.', removeu: 'Tirei {cor} de você.' },
+  // Jornal do Campus: anuncia as versões novas do bot. Desligado até alguém escolher o canal.
+  noticias: { on: false, canalId: null, mencao: '', quais: 'todas', imgs: { topo: '', mini: '', imagem: '', finais: [] } },
 };
 
 const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
@@ -51,16 +53,17 @@ function imagem(v, rotulo, erros) {
   return ref;
 }
 
-/** Banner do topo, miniatura, imagem grande e imagens no final de uma mensagem */
-export function imagens(v, erros) {
+/** Banner do topo, miniatura, imagem grande e imagens no final de uma mensagem. onde: "Notícias", "Entrou"... (vai no erro) */
+export function imagens(v, erros, onde = '') {
   const i = obj(v);
+  const de = onde ? ` (${onde})` : '';
   const finais = Array.isArray(i.finais) ? i.finais : [];
-  if (finais.length > MAX_FINAIS) erros.push(`Até ${MAX_FINAIS} imagens no final.`);
+  if (finais.length > MAX_FINAIS) erros.push(`Até ${MAX_FINAIS} imagens no final${de}.`);
   return {
-    topo: imagem(i.topo, 'Banner do topo', erros),
-    mini: imagem(i.mini, 'Miniatura', erros),
-    imagem: imagem(i.imagem, 'Imagem grande', erros),
-    finais: finais.slice(0, MAX_FINAIS).map((f, n) => imagem(f, `Imagem final ${n + 1}`, erros)),
+    topo: imagem(i.topo, `Banner do topo${de}`, erros),
+    mini: imagem(i.mini, `Miniatura${de}`, erros),
+    imagem: imagem(i.imagem, `Imagem grande${de}`, erros),
+    finais: finais.slice(0, MAX_FINAIS).map((f, n) => imagem(f, `Imagem final ${n + 1}${de}`, erros)),
   };
 }
 
@@ -145,6 +148,18 @@ const SECOES = {
   mensagens(bruto) {
     const m = obj(bruto);
     return { ganhou: txt(m.ganhou, 1500) || PADRAO.mensagens.ganhou, removeu: txt(m.removeu, 1500) || PADRAO.mensagens.removeu };
+  },
+
+  noticias(bruto, _atual, erros) {
+    const n = obj(bruto);
+    return {
+      on: n.on === true,
+      canalId: typeof n.canalId === 'string' && ID.test(n.canalId) ? n.canalId : null,
+      // '' = ninguém, 'everyone' ou o id de um cargo
+      mencao: n.mencao === 'everyone' || (typeof n.mencao === 'string' && ID.test(n.mencao)) ? n.mencao : '',
+      quais: n.quais === 'grandes' ? 'grandes' : 'todas',
+      imgs: imagens(n.imgs, erros, 'Notícias'),
+    };
   },
 };
 

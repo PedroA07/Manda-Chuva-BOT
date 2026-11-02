@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import { iniciarApi } from '../api.js';
+import { VERSAO } from '../lib/versao.js';
 
 /** Sobe a API numa porta livre com uma api falsa e devolve o endereço */
 async function subir(api, extra = {}) {
@@ -38,5 +39,6 @@ test('/saude mostra a versão do bot', async (t) => {
   const { servidor, base } = await subir({ saude: () => ({ ok: true, bot: 'offline' }) });
   t.after(() => servidor.close());
   const r = await fetch(`${base}/saude`);
-  assert.deepEqual(await r.json(), { ok: true, bot: 'offline', versao: '3.0.0' });
+  assert.deepEqual(await r.json(), { ok: true, bot: 'offline', versao: VERSAO });
+  assert.match(VERSAO, /^\d+\.\d+\.\d+$/);
 });
