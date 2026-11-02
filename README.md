@@ -12,11 +12,12 @@ https://pedroa07.github.io/...        https://manda-chuva-bot.onrender.com
 ## 1. Criar o bot no Discord
 
 1. Abra https://discord.com/developers/applications → **New Application** → dê o nome (ex.: Manda Chuva).
-2. Aba **Bot** → **Reset Token** → copie o token. Guarde: ele é a senha do bot. Não precisa ligar nenhum "Privileged Gateway Intent".
+2. Aba **Bot** → **Reset Token** → copie o token. Guarde: ele é a senha do bot.
+3. Na mesma aba, ligue **Server Members Intent** (o painel usa pra contar quem tem cada cor; a portaria e a moderação também vão usar). Sem ela o bot funciona, só sem essas partes: ele avisa no terminal e no painel.
 
 ## 2. Testar no seu PC (opcional)
 
-Precisa do Node 20.12 ou mais novo.
+Precisa do Node 22 ou mais novo.
 
 ```
 copy .env.example .env      (e cole o token em DISCORD_TOKEN)
@@ -51,6 +52,8 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 | `MANTER_ACORDADO` | `1` = acessa o próprio endereço a cada 10 min. Usa `URL_PUBLICA` ou, na Render, o `RENDER_EXTERNAL_URL`. |
 | `PAINEL_PORTA` | Porta da API no PC (padrão 3000). Na hospedagem vale a `PORT` que ela define. `0` desliga a API. |
 | `SO_PAINEL` | `1` = esta cópia só serve a API e não responde aos botões (veja abaixo). |
+| `URL_IMAGENS` | Onde ficam os banners da galeria (padrão: o site da interface no GitHub Pages). |
+| `DADOS_PASTA` | Pasta da configuração quando não usa Gist (padrão: `dados/`). |
 
 ## Bom saber
 
@@ -58,7 +61,10 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - O bot **nunca** dá por botão um cargo com permissão de moderação/admin, nem cargo de bot.
 - Cada botão guarda o ID do cargo, então painel antigo continua funcionando mesmo se a configuração se perder.
 - Depois de salvar, confira o quadro **Hierarquia de cargos** na interface: o cargo do bot precisa ficar acima dos cargos de cor, e os cargos de cor acima dos outros cargos que têm cor.
-- O Discord só tem 4 cores de botão (cinza, azul, verde e vermelho). Quem pinta o nome é o cargo.
+- O Discord só tem 4 cores de botão (cinza, azul, verde e vermelho). Quem pinta o nome é o cargo. Com "cor do cargo" ou "cor própria", o bot põe uma bolinha da cor no botão (emoji da própria aplicação, não gasta os emojis do servidor) e usa o fundo mais parecido.
+- As mensagens usam o layout novo do Discord: banner em cima, caixa colorida, imagens no final e botões. Imagem enviada pelo painel ("Anexar") fica guardada junto da configuração e vai como arquivo na mensagem.
+- Degradê no nome precisa de servidor com impulso. Sem isso, o cargo fica com a primeira cor.
 - `#000000` no Discord é "sem cor". Pra preto use `#010101`.
-- Limites do Discord: até 24 cores e 5 linhas de botões.
+- Limites do Discord: até 24 cores, 40 peças e 4000 letras por mensagem (o painel avisa antes de salvar).
+- Testes: `npm test`.
 - Na Render grátis, o primeiro acesso depois de um tempo parado pode demorar cerca de 1 minuto.
