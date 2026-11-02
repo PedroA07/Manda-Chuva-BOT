@@ -1,15 +1,16 @@
 {
   "name": "manda-chuva-bot",
-  "version": "2.0.0",
-  "description": "Bot Manda Chuva para Discord: cores de nome por botão, com API para a interface web",
+  "version": "3.0.0",
+  "description": "Bot Manda Chuva para Discord: cores de nome, portaria, temas, aniversários e moderação, com API para a interface web",
   "private": true,
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "engines": {
-    "node": ">=20.12"
+    "node": ">=22"
   },
   "dependencies": {
     "discord.js": "^14.28.0"

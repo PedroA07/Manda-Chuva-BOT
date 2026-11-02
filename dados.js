@@ -1,9 +1,11 @@
 // Guarda a configuração e os painéis enviados: em dados/*.json ou, com GIST_ID e GIST_TOKEN definidos,
 // num Gist secreto do GitHub (pra hospedagem grátis que apaga os arquivos ao reiniciar, como a Render)
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const PASTA = new URL('./dados/', import.meta.url);
+// DADOS_PASTA troca a pasta (os testes usam uma temporária)
+const PASTA = process.env.DADOS_PASTA ? pathToFileURL(resolve(process.env.DADOS_PASTA) + sep) : new URL('./dados/', import.meta.url);
 const ARQ_CONFIG = new URL('config.json', PASTA);
 const ARQ_PAINEIS = new URL('paineis.json', PASTA);
 

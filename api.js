@@ -1,6 +1,7 @@
 // API que a interface web (repositório Interface-Manda-Chuva-Bot) usa pra configurar o bot
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { VERSAO } from './lib/versao.js';
 
 const LOCAIS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ORIGEM_LOCAL = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
@@ -10,7 +11,7 @@ const ORIGEM_LOCAL = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
  * Com senha: aceita acesso de fora, e a interface manda a senha no cabeçalho Authorization.
  * origens: sites que podem chamar a API pelo navegador (CORS). Endereços localhost sempre podem.
  */
-export function iniciarApi({ porta, senha, origens, api }) {
+export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
   const rotas = {
     'GET /api/estado': (_, url) => api.estado(url.searchParams.get('servidor')),
     'POST /api/salvar': (corpo) => api.salvar(corpo),
@@ -41,7 +42,7 @@ export function iniciarApi({ porta, senha, origens, api }) {
 
       const url = new URL(req.url ?? '/', 'http://api');
       // A hospedagem usa pra ver se o bot está vivo (e o MANTER_ACORDADO também)
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/saude')) return responder(res, 200, api.saude());
+      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/saude')) return responder(res, 200, { ...api.saude(), versao: VERSAO });
 
       const rota = rotas[`${req.method} ${url.pathname}`];
       if (!rota) return responder(res, 404, { erro: 'Não encontrado.' });
@@ -59,6 +60,7 @@ export function iniciarApi({ porta, senha, origens, api }) {
 
   servidor.on('error', (erro) => console.error(`❌ Não consegui abrir a API na porta ${porta}:`, erro.message));
   servidor.listen(porta, senha ? '0.0.0.0' : '127.0.0.1', () => {
+    if (silencioso) return;
     console.log(`🖥️  API do painel: http://localhost:${porta}${senha ? ' (com senha, aceita acesso de fora)' : ' (sem senha, só deste computador)'}`);
     if (origens.length) console.log(`🌐 Sites liberados: ${origens.join(', ')}`);
   });
