@@ -35,6 +35,8 @@ import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
+import { contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
+import { DE_EVENTO, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil } from './lib/perfil.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -69,7 +71,8 @@ const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChanne
 // o bot conecta sem (lib/conexao.js). GuildMessages = anti-spam (conta mensagens, não lê o texto);
 // AutoModerationExecution = quando a AutoMod do Discord barra alguém (pra avisar/expulsar e anotar no livro).
 // MessageContent (privilegiada) = o texto das mensagens na transcrição dos tickets; sem ela o bot conecta sem (lib/conexao.js).
-const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.AutoModerationExecution, I.MessageContent];
+// GuildVoiceStates = tempo em call (medalhas do perfil no site).
+const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.GuildVoiceStates, I.AutoModerationExecution, I.MessageContent];
 
 // Trocado no iniciarBot pelo cliente conectado (export let: quem importa vê o novo)
 export let client = new Client({ intents: INTENTS });
@@ -155,7 +158,10 @@ async function escolherCor(interacao, alvoId, idsDeCor) {
       tiradas.push(`<@&${id}>`);
     }
   }
-  if (alvo && !tirar && !membro.roles.cache.has(alvoId)) await membro.roles.add(alvo, 'Escolheu cor');
+  if (alvo && !tirar && !membro.roles.cache.has(alvoId)) {
+    await membro.roles.add(alvo, 'Escolheu cor');
+    contarCor(membro.id);
+  }
 
   const { ganhou, removeu } = dados.config().mensagens;
   const resposta = tirar ? removeu.replaceAll('{cor}', tiradas.join(' e ') || 'a cor') : ganhou.replaceAll('{cor}', `<@&${alvoId}>`);
@@ -168,6 +174,7 @@ async function responderInteracao(interacao) {
   if (interacao.isButton() && interacao.customId.startsWith('tkn:')) return avaliarTicket(interacao).catch((erro) => console.error('Avaliação:', erro.message));
   if (!interacao.inCachedGuild()) return;
   if (ehDeTicket(interacao)) return responderTicket(interacao).catch((erro) => console.error('Ticket:', erro));
+  if (interacao.isChatInputCommand() && interacao.commandName === 'medalha') return responderMedalha(interacao);
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
@@ -291,6 +298,13 @@ export function comandos(cfg = dados.config()) {
       .toJSON(),
     new SlashCommandBuilder().setName('aniversario-apagar').setDescription('Tira o seu aniversário da lista').toJSON(),
     comandoTicket(cfg),
+    new SlashCommandBuilder()
+      .setName('medalha')
+      .setDescription('Dá (ou tira) medalha de evento no perfil do site (staff)')
+      .addUserOption((o) => o.setName('membro').setDescription('Quem ganha').setRequired(true))
+      .addStringOption((o) => o.setName('medalha').setDescription('Qual medalha').setRequired(true).addChoices(...MEDALHAS.filter((m) => DE_EVENTO.includes(m.id)).map((m) => ({ name: m.nome, value: m.id }))))
+      .addIntegerOption((o) => o.setName('quantidade').setDescription('Quantas vezes (negativo tira; padrão 1)').setMinValue(-10).setMaxValue(10))
+      .toJSON(),
   ];
 }
 
@@ -641,7 +655,7 @@ async function contarMensagem(msg) {
 }
 
 /** Ações da aba Membros: dar/tirar cargo, avisar, silenciar, tirar o silêncio e expulsar */
-async function moderar(guild, membro, { acao, cargoId, motivo, duracao }) {
+async function moderar(guild, membro, { acao, cargoId, motivo, duracao, por = POR_PAINEL }) {
   if (membro.id === client.user.id) throw comStatus(400, 'Em mim não, né.');
   if (acao === 'dar' || acao === 'tirar') {
     const cargo = guild.roles.cache.get(String(cargoId ?? ''));
@@ -658,10 +672,10 @@ async function moderar(guild, membro, { acao, cargoId, motivo, duracao }) {
     await noDiscord(membro.roles.add(cargo, 'Painel do Manda Chuva'));
     return `${membro.displayName} ganhou ${cargo.name}.`;
   }
-  if (acao === 'avisar') return avisar(guild, membro, motivo, POR_PAINEL);
+  if (acao === 'avisar') return avisar(guild, membro, motivo, por);
   if (acao === 'silenciar') {
     const [ms, texto] = SILENCIOS[duracao] ?? SILENCIOS['10min'];
-    await silenciar(guild, membro, ms, texto, motivo, POR_PAINEL);
+    await silenciar(guild, membro, ms, texto, motivo, por);
     await marcarSemPrazo(membro.id, duracao === 'sem');
     if (duracao === 'sem') return `${membro.displayName} ficou em silêncio sem prazo (até alguém tirar).`;
     return `${membro.displayName} ficou em silêncio por ${texto}.`;
@@ -672,7 +686,7 @@ async function moderar(guild, membro, { acao, cargoId, motivo, duracao }) {
     return `${membro.displayName} pode falar de novo.`;
   }
   if (acao === 'expulsar') {
-    await expulsar(guild, membro, motivo, POR_PAINEL);
+    await expulsar(guild, membro, motivo, por);
     return `${membro.displayName} foi expulso.`;
   }
   throw comStatus(400, 'Ação desconhecida.');
@@ -1255,6 +1269,7 @@ async function apagarCanaisFechados() {
 /** A cada 10 min: tira da fila ticket com canal apagado na mão e fecha os parados */
 async function conferirTickets() {
   await vestirMascote();
+  await gravarEstatisticas();
   const guild = servidor();
   if (!guild || soPainel) return;
   await apagarCanaisFechados();
@@ -1365,6 +1380,98 @@ async function avaliarTicket(i) {
   if (logs?.isTextBased()) await logs.send({ content: `⭐ Ticket #${numero(num)} (${f.motivo}${f.respNome ? `, atendido por ${f.respNome}` : ''}) ganhou nota **${nota}/5**.`, allowedMentions: { parse: [] } }).catch(() => {});
 }
 
+// ---------- Login, papéis, Meu perfil e medalhas ----------
+// Papel no site: admin (Gerenciar servidor), staff (cargo da staff dos tickets) ou membro. Conferido de novo a cada minuto.
+const papeis = new Map();
+async function papelDe(userId) {
+  const guild = servidor();
+  if (!guild) return null;
+  const c = papeis.get(userId);
+  if (c && Date.now() - c.ts < 60_000) return c.papel;
+  const m = await guild.members.fetch({ user: userId, force: true }).catch(() => null);
+  const papel = !m || m.user.bot ? null : m.permissions.has(P.ManageGuild) ? 'admin' : ehStaffTicket(m) ? 'staff' : 'membro';
+  papeis.set(userId, { papel, ts: Date.now() });
+  return papel;
+}
+
+/** Cargos que aparecem no perfil (de cima pra baixo, sem @everyone e sem cargo de integração) */
+const cargosVisiveis = (m, max = 4) =>
+  [...m.roles.cache.values()]
+    .filter((r) => r.id !== m.guild.id && !r.managed)
+    .sort((a, b) => b.position - a.position)
+    .slice(0, max)
+    .map((r) => ({ nome: r.name, cor: r.colors.primaryColor ? intParaHex(r.colors.primaryColor) : '#99AAB5' }));
+
+function medalhasDoMembro(m) {
+  const e = lerEstatisticas();
+  return medalhasDe(e.pessoas[m.id], {
+    entrou: m.joinedTimestamp,
+    staff: ehStaffTicket(m),
+    niver: lerAniversarios().some((p) => p.userId === m.id),
+    rei: Object.values(e.reis).includes(m.id),
+    voz: tempoDeCall(m.id),
+  });
+}
+
+/** Cartão de alguém na lista pública: banner, foto, medalhas fixadas (que ainda valem) e 3 cargos */
+function cartaoDoMembro(m) {
+  const p = perfilDe(m.id);
+  const ganhas = new Set(medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id));
+  return {
+    id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp,
+    banner: p.banner, bio: p.bio, medalhas: p.fixadas.filter((id) => ganhas.has(id)), cargos: cargosVisiveis(m, 3),
+  };
+}
+
+/** Quem pode aparecer na lista pública sem a intent "Server Members": quem o bot já viu + quem montou perfil */
+async function membrosConhecidos(guild) {
+  if (temMembros()) return [...guild.members.cache.values()];
+  const faltam = Object.keys(lerPerfis()).filter((id) => !guild.members.cache.has(id)).slice(0, 50);
+  for (const id of faltam) await guild.members.fetch(id).catch(() => null);
+  return [...guild.members.cache.values()];
+}
+
+/** /medalha (staff): soma (ou tira) medalha de evento */
+async function responderMedalha(i) {
+  try {
+    if (!ehStaffTicket(i.member)) return void (await i.reply({ content: 'Só a staff dá medalha.', flags: MessageFlags.Ephemeral }));
+    const alvo = i.options.getUser('membro', true);
+    if (alvo.bot) return void (await i.reply({ content: 'Bot não ganha medalha (nem eu).', flags: MessageFlags.Ephemeral }));
+    const m = MEDALHAS.find((x) => x.id === i.options.getString('medalha', true));
+    const qtd = i.options.getInteger('quantidade') ?? 1;
+    const total = somarEvento(alvo.id, m.id, qtd);
+    await gravarEstatisticas();
+    const texto = total >= m.max && total - qtd < m.max
+      ? `🏅 ${alvo} conquistou a medalha **${m.nome}**!`
+      : `${qtd >= 0 ? '➕' : '➖'} ${alvo} agora tem ${Math.min(total, m.max)}/${m.max} em **${m.nome}**.`;
+    await i.reply({ content: texto, allowedMentions: { users: [alvo.id] } });
+  } catch (erro) {
+    console.error('Medalha:', erro);
+  }
+}
+
+/** Conta mensagem pras medalhas (só do servidor configurado e de gente, não de bot) */
+function contarParaMedalhas(msg) {
+  if (soPainel || !msg.inGuild() || msg.author.bot || msg.webhookId || msg.guildId !== dados.config().servidorId) return;
+  contarMensagemDaPessoa(msg.author.id);
+}
+
+/** Entrou/saiu de call (mudar de canal não para o relógio; canal de AFK não conta) */
+function mudouDeCall(antes, depois) {
+  if (soPainel || depois.guild.id !== dados.config().servidorId || depois.member?.user.bot) return;
+  const afk = depois.guild.afkChannelId;
+  const naCall = !!depois.channelId && depois.channelId !== afk;
+  if (naCall) entrouNaCall(depois.id);
+  else saiuDaCall(depois.id);
+}
+
+/** Desligando (deploy novo na Render): fecha as calls abertas e grava os contadores */
+async function salvarAntesDeSair() {
+  fecharCalls();
+  await gravarEstatisticas();
+  await dados.esperarGravacao();
+}
+
 /** Fila do painel: abertos, do mais novo pro mais velho */
 function filaDeTickets(guild) {
   return lerTickets()
@@ -1383,6 +1490,73 @@ async function donoDoBot() {
 // A API (api.js) só conversa com o bot por aqui
 export const api = {
   saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE }),
+  clientId: () => client.application?.id ?? client.user?.id ?? null,
+  papelDe,
+
+  // Quem entrou no site: papel, conta, perfil, medalhas e números (com a senha do painel: só o papel)
+  async eu(quem) {
+    if (quem.tipo !== 'discord') return { papel: quem.papel, papelTxt: 'Senha do painel', usuario: null };
+    const guild = servidor();
+    const m = guild && (await guild.members.fetch(quem.id).catch(() => null));
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    const medalhas = medalhasDoMembro(m);
+    const staffNome = guild.roles.cache.get(dados.config().tickets.staffId)?.name;
+    const s = lerEstatisticas().pessoas[m.id];
+    return {
+      papel: quem.papel,
+      papelTxt: quem.papel === 'admin' ? 'Staff · Reitoria' : quem.papel === 'staff' ? `Staff · ${staffNome ?? 'Staff'}` : 'Membro',
+      usuario: { id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp, cargos: cargosVisiveis(m) },
+      perfil: perfilDe(m.id),
+      medalhas,
+      stats: { mensagens: s?.m ?? 0, horas: Math.floor(tempoDeCall(m.id).total / 3600), medalhas: medalhas.filter((x) => x.ganha).length },
+    };
+  },
+
+  async salvarPerfil(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const m = await servidor()?.members.fetch(quem.id).catch(() => null);
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    const r = await salvarPerfil(m.id, corpo, medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id));
+    if (r.erro) throw comStatus(400, r.erro);
+    return { ok: true, perfil: r.perfil };
+  },
+
+  // O que membro (sem ser staff) vê: o bot, o nome do servidor e o jornal
+  publico() {
+    const user = client.isReady() ? client.user : null;
+    const guild = servidor();
+    return {
+      bot: user ? { online: true, nome: user.username, avatar: user.displayAvatarURL({ size: 64 }), versao: VERSAO } : { online: false, versao: VERSAO },
+      servidor: guild ? { id: guild.id, nome: guild.name, membros: guild.memberCount } : null,
+      noticias: NOVIDADES,
+    };
+  },
+
+  // Lista pública da turma (9 por página)
+  async turma(params) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot está dormindo. Tente de novo em 1 minuto.');
+    const q = String(params.get('q') ?? '').trim().replace(/^@/, '').toLowerCase();
+    let lista = await membrosConhecidos(guild);
+    if (q && !temMembros()) lista = [...lista, ...(await guild.members.search({ query: q, limit: 50 }).catch(() => new Map())).values()];
+    const vistos = new Set();
+    lista = lista
+      .filter((m) => !m.user.bot && !vistos.has(m.id) && vistos.add(m.id))
+      .filter((m) => !q || m.displayName.toLowerCase().includes(q) || m.user.username.toLowerCase().includes(q))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'pt-BR'));
+    const p = pagina(lista, params.get('pagina'), 9);
+    return { ...p, itens: p.itens.map(cartaoDoMembro), completa: temMembros() };
+  },
+
+  // Medalha de evento pelo painel (a mesma conta do /medalha)
+  async darMedalha(corpo) {
+    const m = MEDALHAS.find((x) => x.id === corpo?.medalha && DE_EVENTO.includes(x.id));
+    if (!m) throw comStatus(400, 'Essa medalha não é de evento.');
+    const qtd = Math.max(-10, Math.min(10, Math.trunc(Number(corpo?.qtd)) || 1));
+    const total = somarEvento(String(corpo?.userId ?? ''), m.id, qtd);
+    await gravarEstatisticas();
+    return { ok: true, total, mensagem: `${m.nome}: ${Math.min(total, m.max)}/${m.max}.` };
+  },
 
   async estado(servidorId) {
     const cfg = dados.config();
@@ -1413,12 +1587,15 @@ export const api = {
     };
   },
 
-  async salvar(entrada) {
+  async salvar(entradaBruta, quem) {
+    // Hierarquia mexe em permissões: só quem gerencia o servidor (ou a senha do painel)
+    const entrada = quem && quem.papel !== 'admin' && entradaBruta?.hierarquia ? { ...entradaBruta, hierarquia: null } : entradaBruta;
     const { cfg, erros } = dados.normalizar(entrada);
     erros.push(...errosDoPainel(cfg), ...errosDaHierarquia(entrada?.hierarquia));
     if (erros.length) throw comStatus(400, erros.join('\n'));
     const antes = dados.config().servidorId;
     const rel = [];
+    if (entrada !== entradaBruta) rel.push('A hierarquia de cargos só muda com quem gerencia o servidor: essa parte ficou de fora.');
     const guild = servidor(cfg.servidorId);
     if (guild) {
       await sincronizarCargos(guild, cfg, rel);
@@ -1464,31 +1641,39 @@ export const api = {
     return { ...p, itens: p.itens.map((x) => descreverMembro(x.m, avisos)) };
   },
 
-  async acaoMembro(corpo) {
+  async acaoMembro(corpo, quem) {
     const guild = servidor();
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
     const membro = await guild.members.fetch(String(corpo?.userId ?? '')).catch(() => null);
     if (!membro) throw comStatus(404, 'Essa pessoa não está mais no servidor.');
     const motivo = String(corpo?.motivo ?? '').trim().slice(0, 300);
-    const mensagem = await moderar(guild, membro, { acao: String(corpo?.acao ?? ''), cargoId: corpo?.cargoId, motivo, duracao: corpo?.duracao });
+    let por = POR_PAINEL;
+    if (quem?.tipo === 'discord') {
+      const eu = await guild.members.fetch(quem.id).catch(() => null);
+      if (!eu) throw comStatus(403, 'Você não está no servidor.');
+      if (membro.id === guild.ownerId || (eu.id !== guild.ownerId && membro.id !== eu.id && membro.roles.highest.position >= eu.roles.highest.position)) throw comStatus(403, 'Você não pode mexer em quem está no mesmo nível ou acima de você.');
+      por = `por ${eu.displayName} (painel)`;
+    }
+    const mensagem = await moderar(guild, membro, { acao: String(corpo?.acao ?? ''), cargoId: corpo?.cargoId, motivo, duracao: corpo?.duracao, por });
     await dados.esperarGravacao();
     const agora = await guild.members.fetch({ user: membro.id, force: true }).catch(() => null);
     return { ok: true, mensagem, membro: agora ? descreverMembro(agora) : null };
   },
 
   // Fila de tickets no painel: Fechar (e Assumir, quando o painel sabe quem é a pessoa)
-  async ticketAcao(corpo) {
+  async ticketAcao(corpo, quem) {
     const guild = servidor();
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
     const ticket = lerTickets().abertos.find((x) => numero(x.num) === String(corpo?.num ?? ''));
     if (!ticket) throw comStatus(404, 'Esse ticket já foi fechado.');
     if (corpo?.acao === 'fechar') {
-      await fecharTicket(guild, ticket, { porId: null, porNome: 'a staff (pelo painel)', motivo: String(corpo.motivo ?? '').trim().slice(0, 200) });
+      const pessoa = quem?.tipo === 'discord' ? quem : null;
+      await fecharTicket(guild, ticket, { porId: pessoa?.id ?? null, porNome: pessoa?.nome ?? 'a staff (pelo painel)', motivo: String(corpo.motivo ?? '').trim().slice(0, 200) });
       await dados.esperarGravacao();
       return { ok: true, mensagem: `Ticket #${numero(ticket.num)} fechado. O canal some em ${APAGAR[dados.config().tickets.apagar][1]}.` };
     }
     if (corpo?.acao === 'assumir') {
-      const membro = await guild.members.fetch(String(corpo.userId ?? '')).catch(() => null);
+      const membro = await guild.members.fetch(String(quem?.tipo === 'discord' ? quem.id : (corpo.userId ?? ''))).catch(() => null);
       if (!membro) throw comStatus(400, 'Não sei quem você é no servidor.');
       const ja = await assumirTicket(ticket, membro);
       if (!ja) await guild.channels.cache.get(ticket.canalId)?.send({ content: `🙋 ${membro} assumiu o ticket (pelo painel).`, allowedMentions: { parse: [] } }).catch(() => {});
@@ -1626,6 +1811,8 @@ function prepararCliente(c) {
   if (!soPainel) c.on(Events.InteractionCreate, responderInteracao);
   if (!soPainel) c.on(Events.AutoModerationActionExecution, (ex) => tratarAutomod(ex).catch((erro) => console.error('Auto-mod:', erro)));
   if (!soPainel) c.on(Events.MessageCreate, (msg) => contarMensagem(msg).catch((erro) => console.error('Anti-spam:', erro)));
+  if (!soPainel) c.on(Events.MessageCreate, contarParaMedalhas);
+  if (!soPainel) c.on(Events.VoiceStateUpdate, mudouDeCall);
   if (!soPainel) c.on(Events.GuildMemberAdd, (membro) => voltouSilenciado(membro).catch((erro) => console.error('Silêncio sem prazo:', explicarErro(erro))));
   if (!soPainel) ligarPortaria(c, postarPortaria);
   c.once(Events.ClientReady, async (pronto) => {
@@ -1636,6 +1823,7 @@ function prepararCliente(c) {
     // Comandos sempre na versão deste código (uma atualização pode ter mudado o /aniversario, por exemplo)
     const guild = servidor();
     if (guild && !soPainel) await registrarComandos(guild);
+    if (guild && !soPainel) for (const v of guild.voiceStates.cache.values()) if (v.channelId && v.channelId !== guild.afkChannelId && !v.member?.user.bot) entrouNaCall(v.id);
     // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
     setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
     if (!soPainel) {
@@ -1667,5 +1855,6 @@ function prepararCliente(c) {
 /** @param {string} token @param {{ soPainel?: boolean }} [opcoes] */
 export async function iniciarBot(token, opcoes = {}) {
   soPainel = !!opcoes.soPainel;
+  if (!soPainel) process.once('SIGTERM', () => salvarAntesDeSair().catch(() => {}).finally(() => process.exit(0)));
   ({ client } = await conectar(token, (intents) => prepararCliente(new Client({ intents })), INTENTS));
 }

@@ -38,6 +38,10 @@ Sem `PAINEL_SENHA`, a API só aceita acesso do próprio PC. Abra a interface (ve
    - `GIST_ID` e `GIST_TOKEN`: do item acima.
 3. Espere o deploy terminar e copie o endereço do serviço (algo como `https://manda-chuva-bot.onrender.com`). Abrindo esse endereço no navegador deve aparecer `{"ok":true,"bot":"online"}`.
 4. Abra a interface, coloque esse endereço e a senha.
+5. **Login com Discord (pra membros e staff entrarem com a própria conta):**
+   - No Developer Portal → sua aplicação → **OAuth2**: copie o **Client Secret** (Reset Secret) e, em **Redirects**, adicione `https://manda-chuva-bot.onrender.com/auth/callback` (o endereço do seu serviço + `/auth/callback`).
+   - Na Render → o serviço → **Environment**: crie `DISCORD_CLIENT_SECRET` com o segredo copiado. Depois do deploy, o `/saude` mostra `"login":true` e o botão "Entrar com Discord" do site passa a funcionar.
+   - Quem tem "Gerenciar servidor" entra como staff com tudo liberado; quem tem o cargo da staff (aba Tickets) entra como staff (menos a hierarquia de cargos); o resto vê Notícias, Membros e Meu perfil. A senha do painel continua valendo como antes.
 
 O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereço a cada 10 min, porque a Render grátis desliga o serviço depois de 15 min sem acesso (e aí o bot sai do Discord). O plano grátis dá 750 horas por mês, o que cobre um serviço ligado o mês todo.
 
@@ -47,6 +51,8 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 |---|---|
 | `DISCORD_TOKEN` | Token do bot. |
 | `PAINEL_SENHA` | Senha da interface (mínimo 12 caracteres). Sem ela, a API só aceita acesso do próprio PC. |
+| `DISCORD_CLIENT_SECRET` | Liga o "Entrar com Discord" no site (Developer Portal → OAuth2). Precisa do redirect `<endereço do bot>/auth/callback` cadastrado lá. |
+| `SESSAO_SEGREDO` | Opcional: troque pra derrubar todas as sessões do site. |
 | `PAINEL_ORIGENS` | Sites que podem usar a API, separados por vírgula. Já vem com `https://pedroa07.github.io`. Endereços `localhost` sempre podem. |
 | `GIST_ID`, `GIST_TOKEN` | Guardam a configuração num Gist em vez da pasta `dados/`. |
 | `MANTER_ACORDADO` | `1` = acessa o próprio endereço a cada 10 min. Usa `URL_PUBLICA` ou, na Render, o `RENDER_EXTERNAL_URL`. |
@@ -72,6 +78,7 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - **Temas de datas festivas:** em cada data (Natal, Ano Novo, Carnaval, Páscoa...) o bot troca banner, miniatura, cor e põe a frase do tema nas mensagens marcadas em "Usar em". Quando dois temas caem no mesmo dia, ganha o de período menor. Carnaval e Páscoa são calculados todo ano. O dia é contado no horário de Brasília (`FUSO` troca). A cada 30 min o bot confere a data e atualiza os painéis já enviados.
 - Banners "Eventos" da galeria: o bot desenha a placa com o nome do seu servidor (rota pública `/placas/<evento>.jpg`).
 - **Tickets (aba Tickets):** o bot põe um menu de motivos no canal escolhido; quem escolhe ganha um canal privado `#ticket-0042-nome` na categoria (ou o bot cria a 🎫 TICKETS), com Assumir, Adicionar membro e Fechar. Ao fechar: transcrição `.html` no canal de logs e na DM, avaliação de 1 a 5 estrelas na DM e o canal some depois do prazo escolhido. Fecha sozinho ticket parado. Comandos `/ticket abrir, fechar, add, remover, assumir, renomear, painel, config`. Precisa de "Gerenciar canais"; sem a Message Content Intent a transcrição sai sem o texto.
+- **Meu perfil e medalhas (site):** cada pessoa escolhe banner (48), bio e até 3 medalhas fixadas. O bot conta mensagens (sem ler o texto), tempo em call, madrugada, trocas de cor e tempo de casa; medalhas de evento a staff dá com `/medalha` ou pela aba Cargos › Membros. Os números ficam em `estatisticas.json` e os perfis em `perfis.json` (Gist).
 - **Jornal do Campus:** a cada versão nova, o bot posta a notícia no canal escolhido na aba Notícias do painel (desligado até você escolher o canal). Na primeira vez ele posta só a mais recente. Pra mencionar @everyone, o cargo do bot precisa da permissão "Mencionar @everyone".
 - `#000000` no Discord é "sem cor". Pra preto use `#010101`.
 - Limites do Discord: até 24 cores, 40 peças e 4000 letras por mensagem (o painel avisa antes de salvar).
