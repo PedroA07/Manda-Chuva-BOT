@@ -476,12 +476,28 @@ async function voltouSilenciado(membro) {
 
 /** A cada 6 horas: renova silêncios sem prazo e atualiza as regras do auto-mod (convites novos do servidor) */
 async function manutencao() {
+  await vestirMascote();
   const guild = servidor();
   if (!guild || soPainel) return;
   await cuidarDosSilencios(guild);
   const rel = [];
   await sincronizarAutomod(guild, dados.config(), rel);
   if (rel.length) console.log('Auto-mod:', rel.join(' | '));
+}
+
+// Foto e banner do perfil do bot = o mascote do redesign. Troca uma vez só (o Discord limita trocas de avatar);
+// se as imagens ainda não estiverem no site (a interface sobe depois do bot), tenta de novo na próxima manutenção.
+const VISUAL = 'mascote-1';
+async function vestirMascote() {
+  if (soPainel || !client.isReady() || lerRegistro().visual === VISUAL) return;
+  try {
+    await client.user.setAvatar(midia('banners/bot/mascote.png').url);
+    await client.user.setBanner(midia('banners/bot/banner.png').url);
+    await salvarRegistro({ visual: VISUAL });
+    console.log('🧢 Foto e banner do bot trocados pelo mascote.');
+  } catch (erro) {
+    console.error('Não consegui trocar a foto do bot (tento de novo depois):', explicarErro(erro));
+  }
 }
 
 // ---------- Auto-moderação ----------
