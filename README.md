@@ -1,21 +1,160 @@
-# Manda Chuva BOT
+<div align="center">
 
-Bot de Discord que dá cor ao nome por botão. Clicou num botão, ganha a cor (uma por vez). Clicou de novo, tira. Também tem o botão "Tirar cor" e o comando `/cor`.
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/bot/banner.png" alt="Manda Chuva, o bot oficial da resenha" width="100%">
 
-A configuração (cores, textos do embed, botões, respostas) é feita pela **interface web**, que fica em outro repositório: [Interface-Manda-Chuva-Bot](https://github.com/PedroA07/Interface-Manda-Chuva-Bot). Este repositório é só o bot + a API que a interface usa.
+# 🌧️ Manda Chuva
 
+### O bot oficial da resenha
+
+Cargos de cor, boas-vindas com card, festas que se trocam sozinhas, aniversários, tickets, moderação e perfil com medalhas.<br>
+Tudo configurado por um painel bonito no navegador, com login do Discord.
+
+[![Versão](https://img.shields.io/github/package-json/v/PedroA07/Manda-Chuva-BOT?label=vers%C3%A3o&style=for-the-badge&color=f2c14e&labelColor=1f2a5c)](https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html)
+[![Status](https://img.shields.io/website?url=https%3A%2F%2Fmanda-chuva-bot.onrender.com%2Fsaude&label=bot&up_message=acordado&up_color=3ccf7a&down_message=dormindo&down_color=c4363c&style=for-the-badge&labelColor=1f2a5c)](https://manda-chuva-bot.onrender.com/saude)
+[![discord.js](https://img.shields.io/badge/discord.js-v14-5865f2?style=for-the-badge&logo=discord&logoColor=white&labelColor=1f2a5c)](https://discord.js.org)
+[![Node](https://img.shields.io/badge/node-22%2B-3c873a?style=for-the-badge&logo=nodedotjs&logoColor=white&labelColor=1f2a5c)](https://nodejs.org)
+[![Feito no Brasil](https://img.shields.io/badge/feito%20no-Brasil-009c3b?style=for-the-badge&labelColor=1f2a5c)](#)
+
+**[➕ Adicionar ao Discord](https://discord.com/api/oauth2/authorize?client_id=1566518074587349042&scope=bot+applications.commands&permissions=1099780189366)** &nbsp;·&nbsp;
+**[🖥️ Abrir o painel](https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html)** &nbsp;·&nbsp;
+**[🌐 Site](https://pedroa07.github.io/Interface-Manda-Chuva-Bot/)** &nbsp;·&nbsp;
+**[📘 Central do Bot](https://pedroa07.github.io/Interface-Manda-Chuva-Bot/central.html)**
+
+</div>
+
+---
+
+## ✨ O que ele faz
+
+<table>
+<tr>
+<td width="50%" valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/painel-cores.gif" width="100%" alt="Painel de cores"><br>
+<h3>🎨 Cargos de cor</h3>
+Até 24 cores com emoji, degradê e botão no painel. Clicou, pintou o nome. Clicou de novo, tirou. Também tem <code>/cor</code>.
+</td>
+<td width="50%" valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/festas/natal-entrada.gif" width="100%" alt="Boas-vindas"><br>
+<h3>🚪 Portaria</h3>
+Boas-vindas com <b>card desenhado na hora</b> com a foto e o nome de quem chegou, cargo automático e mensagens de saída, expulsão, ban e silêncio.
+</td>
+</tr>
+<tr>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/festas/junina-painel.gif" width="100%" alt="Tema de Festa Junina"><br>
+<h3>🎉 Festas automáticas</h3>
+Natal, Ano Novo, Carnaval, Páscoa, Junina, Halloween e mais: o bot troca banners, cores e frases sozinho na data certa.
+</td>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/festas/card-niver.jpg" width="100%" alt="Aniversário"><br>
+<h3>🎂 Aniversários</h3>
+Cada um cadastra com <code>/aniversario</code>. No dia sai o card com foto e idade, o cargo "Aniversariante do dia" e parabéns na DM.
+</td>
+</tr>
+<tr>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/docs/telas/tickets.webp" width="100%" alt="Tickets"><br>
+<h3>🎫 Tickets</h3>
+Menu de motivos, canal privado com a staff, fila, transcrição em <code>.html</code>, avaliação por estrelas e canal que some sozinho.
+</td>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/docs/telas/perfil.webp" width="100%" alt="Meu perfil"><br>
+<h3>🪪 Perfil e medalhas</h3>
+Login com o Discord no site: 48 banners, bio e 16 medalhas pra colecionar falando, aparecendo na call e indo nos eventos.
+</td>
+</tr>
+<tr>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/ban-jubilado.gif" width="100%" alt="Moderação"><br>
+<h3>🛡️ Moderação</h3>
+Avisos que expiram, silenciar (até sem prazo), expulsar, livro de ocorrências com Desfazer e auto-mod com a AutoMod do Discord.
+</td>
+<td valign="top">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/noticias.gif" width="100%" alt="Jornal do Campus"><br>
+<h3>📰 Jornal do Campus</h3>
+Toda versão nova vira notícia no painel e, se você quiser, num canal do servidor. Ninguém fica sem saber o que mudou.
+</td>
+</tr>
+</table>
+
+## 🏅 Medalhas do campus
+
+<div align="center">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/calouro.png" width="56" title="Calouro">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/veterano.png" width="56" title="Veterano">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/lenda.png" width="56" title="Lenda do Campus">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/tagarela.png" width="56" title="Tagarela">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/rei-resenha.png" width="56" title="Rei da Resenha">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/rato-call.png" width="56" title="Rato de Call">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/construtor.png" width="56" title="Mestre dos Blocos">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/detetive.png" width="56" title="Detetive Espacial">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/mira-ouro.png" width="56" title="Mira de Ouro">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/sobrevivente.png" width="56" title="Último de Pé">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/foliao.png" width="56" title="Folião">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/aniversario.png" width="56" title="Parabéns!">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/moderador.png" width="56" title="Guardião">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/coruja.png" width="56" title="Coruja da Madrugada">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/capivara.png" width="56" title="Capivara Zen">
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/medalhas/pintor.png" width="56" title="Pintor de Nomes">
+</div>
+
+## ⌨️ Comandos
+
+| Comando | O que faz | Quem usa |
+|---|---|---|
+| `/cor` | Escolhe (ou tira) a cor do seu nome | 🟢 todos |
+| `/aniversario dia mes [ano]` | Cadastra seu aniversário (o ano é opcional) | 🟢 todos |
+| `/perfil [@membro]` | Mostra o cartão do perfil com banner e medalhas | 🟢 todos |
+| `/medalhas` | Lista suas medalhas e o que falta pra cada uma | 🟢 todos |
+| `/painel` | Cartão com os botões pro painel e pra Central | 🟢 todos |
+| `/ticket abrir` · `fechar` | Abre ou fecha um ticket com a staff | 🟢 todos |
+| `/privacidade ver` · `apagar` | Mostra ou apaga os seus dados | 🟢 todos |
+| `/ticket add` · `remover` · `assumir` · `renomear` | Cuida do ticket atual | 🔵 staff |
+| `/medalha @membro medalha` | Dá (ou tira) medalha de evento | 🔵 staff |
+| `/tema simular <festa>` | Prévia de uma festa antes da data | 🔵 staff |
+| `/ticket painel` · `config` | Manda o menu de tickets e o link da configuração | 🔴 admin |
+
+## 💬 Textos prontos pro Discord
+
+Apresentação do bot, temporada de medalhas e como funciona o ticket, já formatados pro Discord e cabendo numa mensagem: **[docs/APRESENTACAO-DISCORD.md](docs/APRESENTACAO-DISCORD.md)**.
+
+## 🖥️ O painel
+
+<table>
+<tr>
+<td width="50%"><img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/docs/telas/cores.webp" width="100%" alt="Aba Cores"></td>
+<td width="50%"><img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/docs/telas/membros.webp" width="100%" alt="Membros"></td>
+</tr>
+<tr>
+<td align="center"><b>Staff</b>: cores, cargos, painel, portaria, temas, tickets</td>
+<td align="center"><b>Membros</b>: notícias, a turma e o próprio perfil</td>
+</tr>
+</table>
+
+O site fica em outro repositório: **[Interface-Manda-Chuva-Bot](https://github.com/PedroA07/Interface-Manda-Chuva-Bot)**. Este aqui é o bot + a API que o site usa.
+
+```mermaid
+flowchart LR
+  S["🌐 Site no GitHub Pages<br/>painel, perfil e Central"] -- "login com Discord<br/>ou senha do painel" --> A["🤖 Bot + API<br/>Render"]
+  A --> G[("💾 Gist secreto<br/>config, perfis, medalhas")]
+  A --> D["💬 Discord"]
 ```
-Interface (GitHub Pages)  ──senha──▶  API deste bot (Render)  ──▶  Discord
-https://pedroa07.github.io/...        https://manda-chuva-bot.onrender.com
-```
 
-## 1. Criar o bot no Discord
+---
+
+## 🛠️ Hospedar o seu
+
+<details>
+<summary><b>1️⃣ Criar o bot no Discord</b></summary>
 
 1. Abra https://discord.com/developers/applications → **New Application** → dê o nome (ex.: Manda Chuva).
 2. Aba **Bot** → **Reset Token** → copie o token. Guarde: ele é a senha do bot.
 3. Na mesma aba, ligue **Server Members Intent** (o painel usa pra contar quem tem cada cor; a portaria e a moderação também vão usar) e **Message Content Intent** (o texto das mensagens na transcrição dos tickets). Sem elas o bot funciona, só sem essas partes: ele avisa no terminal e no painel.
 
-## 2. Testar no seu PC (opcional)
+</details>
+
+<details>
+<summary><b>2️⃣ Testar no seu PC (opcional)</b></summary>
 
 Precisa do Node 22 ou mais novo.
 
@@ -27,7 +166,10 @@ npm start
 
 Sem `PAINEL_SENHA`, a API só aceita acesso do próprio PC. Abra a interface (veja o LEIA-ME dela) com o endereço `http://localhost:3000`. O link pra adicionar o bot a um servidor aparece no terminal e na interface.
 
-## 3. Subir na Render (grátis)
+</details>
+
+<details>
+<summary><b>3️⃣ Subir na Render (grátis) e ligar o login com Discord</b></summary>
 
 1. **Gist pra guardar a configuração.** A Render grátis apaga os arquivos sempre que reinicia, então a configuração fica num Gist secreto:
    - Crie em https://gist.github.com um gist **secreto** com um arquivo chamado `paineis.json` contendo `[]`. O ID é o código no fim do endereço (`gist.github.com/PedroA07/` **`este-código`**).
@@ -45,7 +187,10 @@ Sem `PAINEL_SENHA`, a API só aceita acesso do próprio PC. Abra a interface (ve
 
 O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereço a cada 10 min, porque a Render grátis desliga o serviço depois de 15 min sem acesso (e aí o bot sai do Discord). O plano grátis dá 750 horas por mês, o que cobre um serviço ligado o mês todo.
 
-## Variáveis
+</details>
+
+<details>
+<summary><b>⚙️ Variáveis de ambiente</b></summary>
 
 | Variável | Pra quê |
 |---|---|
@@ -61,7 +206,10 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 | `URL_IMAGENS` | Onde ficam os banners da galeria (padrão: o site da interface no GitHub Pages). |
 | `DADOS_PASTA` | Pasta da configuração quando não usa Gist (padrão: `dados/`). |
 
-## Bom saber
+</details>
+
+<details>
+<summary><b>📚 Bom saber (como cada parte funciona)</b></summary>
 
 - Não rode duas cópias normais com o mesmo token ao mesmo tempo, senão as duas respondem aos botões. Se o bot de verdade está na Render e você quer mexer pelo PC, use `SO_PAINEL=1` na cópia do PC.
 - O bot **nunca** dá por botão um cargo com permissão de moderação/admin, nem cargo de bot.
@@ -85,3 +233,15 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - Limites do Discord: até 24 cores, 40 peças e 4000 letras por mensagem (o painel avisa antes de salvar).
 - Testes: `npm test`.
 - Na Render grátis, o primeiro acesso depois de um tempo parado pode demorar cerca de 1 minuto.
+
+</details>
+
+---
+
+<div align="center">
+
+<img src="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/banners/bot/mascote-256.png" width="96" alt="Mascote do Manda Chuva">
+
+<sub>Feito com café do RU · EST. 2026 · <a href="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/central.html#termos">Termos de Uso</a> · <a href="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/central.html#privacidade">Privacidade</a> · <a href="https://pedroa07.github.io/Interface-Manda-Chuva-Bot/central.html#suporte">Suporte</a></sub>
+
+</div>

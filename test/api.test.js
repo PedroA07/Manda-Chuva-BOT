@@ -51,6 +51,7 @@ test('/saude mostra a versão do bot', async (t) => {
   t.after(() => servidor.close());
   const r = await fetch(`${base}/saude`);
   assert.deepEqual(await r.json(), { ok: true, bot: 'offline', versao: VERSAO, login: false });
+  assert.equal((await fetch(`${base}/saude`, { method: 'HEAD' })).status, 200);
   assert.match(VERSAO, /^\d+\.\d+\.\d+$/);
 });
 

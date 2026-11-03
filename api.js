@@ -80,7 +80,11 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
 
       const url = new URL(req.url ?? '/', 'http://api');
       // A hospedagem usa pra ver se o bot está vivo (e o MANTER_ACORDADO também). login = o site pode mostrar "Entrar com Discord"
-      if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/saude')) return responder(res, 200, { ...api.saude(), versao: VERSAO, login: loginLigado() });
+      // HEAD também: monitores de status (e o selo do README) perguntam só se está de pé
+      if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/saude')) {
+        if (req.method === 'HEAD') return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end();
+        return responder(res, 200, { ...api.saude(), versao: VERSAO, login: loginLigado() });
+      }
 
       // ---------- Login com Discord (navegação do navegador, não é fetch) ----------
       if (req.method === 'GET' && url.pathname === '/auth/entrar') {
