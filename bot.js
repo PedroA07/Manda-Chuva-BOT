@@ -1576,8 +1576,9 @@ async function responderTema(i) {
   if (!tema) return void (await i.reply(efemero({ content: 'Esse tema não existe mais.' })));
   await i.deferReply({ flags: MessageFlags.Ephemeral });
   const msg = await montarMensagem(i.guild, cfg, tema);
-  await i.editReply({ ...msg, flags: MessageFlags.IsComponentsV2 });
-  await i.followUp(efemero({ content: `Isso é só uma prévia de **${tema.nome}**: nada mudou no servidor.` }));
+  // A prévia vai numa mensagem nova (a resposta adiada é de texto e não vira layout novo do Discord)
+  await i.editReply(`Prévia do painel de cores em **${tema.nome}** (só você vê; nada mudou no servidor):`);
+  await i.followUp(efemero(msg));
 }
 
 /** /privacidade ver | apagar: o que o bot guarda da pessoa e o botão pra apagar */
