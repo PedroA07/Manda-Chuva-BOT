@@ -10,6 +10,7 @@ import {
   OAuth2Scopes,
   PermissionFlagsBits as P,
   SlashCommandBuilder,
+  SnowflakeUtil,
   LabelBuilder,
   ModalBuilder,
   TextInputBuilder,
@@ -34,6 +35,7 @@ import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
+import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
 // Permissões que vão no link de convite (e que o painel confere se o bot tem)
@@ -54,7 +56,9 @@ const NOMES_MODERACAO = [
   [P.ManageGuild, 'Gerenciar servidor (auto-moderação)'],
   [P.ManageMessages, 'Gerenciar mensagens (anti-spam)'],
 ];
-export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO].map(([p]) => p);
+// Tickets: criar e apagar os canais privados
+const NOMES_TICKETS = [[P.ManageChannels, 'Gerenciar canais (tickets)']];
+export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO, ...NOMES_TICKETS].map(([p]) => p);
 
 // Cargo com qualquer uma dessas permissões nunca é dado por botão (evita alguém virar admin sem querer)
 const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChannels, P.ManageMessages,
@@ -64,7 +68,8 @@ const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChanne
 // auditoria (portaria); GuildMembers (privilegiada) = quem entra/sai e quem tem cada cor. Sem ela liberada no portal,
 // o bot conecta sem (lib/conexao.js). GuildMessages = anti-spam (conta mensagens, não lê o texto);
 // AutoModerationExecution = quando a AutoMod do Discord barra alguém (pra avisar/expulsar e anotar no livro).
-const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.AutoModerationExecution];
+// MessageContent (privilegiada) = o texto das mensagens na transcrição dos tickets; sem ela o bot conecta sem (lib/conexao.js).
+const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.AutoModerationExecution, I.MessageContent];
 
 // Trocado no iniciarBot pelo cliente conectado (export let: quem importa vê o novo)
 export let client = new Client({ intents: INTENTS });
@@ -159,7 +164,10 @@ async function escolherCor(interacao, alvoId, idsDeCor) {
 
 /** @param {import('discord.js').Interaction} interacao */
 async function responderInteracao(interacao) {
+  // Avaliação do ticket chega pela DM (fora do servidor)
+  if (interacao.isButton() && interacao.customId.startsWith('tkn:')) return avaliarTicket(interacao).catch((erro) => console.error('Avaliação:', erro.message));
   if (!interacao.inCachedGuild()) return;
+  if (ehDeTicket(interacao)) return responderTicket(interacao).catch((erro) => console.error('Ticket:', erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
@@ -282,7 +290,29 @@ export function comandos(cfg = dados.config()) {
       .addIntegerOption((o) => o.setName('ano').setDescription('Ano (AAAA), tipo 2003. Opcional: sem ano a mensagem sai sem idade').setMinValue(1900).setMaxValue(hojeNoBrasil().ano))
       .toJSON(),
     new SlashCommandBuilder().setName('aniversario-apagar').setDescription('Tira o seu aniversário da lista').toJSON(),
+    comandoTicket(cfg),
   ];
+}
+
+/** /ticket com os motivos ligados como opções do "abrir" */
+function comandoTicket(cfg) {
+  const motivos = cfg.tickets.motivos
+    .map((m, i) => ({ m, i }))
+    .filter(({ m }) => m.on)
+    .slice(0, 25)
+    .map(({ m, i }) => ({ name: (m.emoji.startsWith('<') ? m.nome : `${m.emoji} ${m.nome}`).slice(0, 100), value: String(i) }));
+  return new SlashCommandBuilder()
+    .setName('ticket')
+    .setDescription('Tickets: abrir, fechar e cuidar do atendimento')
+    .addSubcommand((s) => s.setName('abrir').setDescription('Abre um ticket sem precisar do botão').addStringOption((o) => o.setName('motivo').setDescription('Qual o motivo?').setRequired(true).addChoices(...motivos)))
+    .addSubcommand((s) => s.setName('fechar').setDescription('Fecha o ticket, salva a transcrição e apaga o canal').addStringOption((o) => o.setName('motivo').setDescription('Por que está fechando (opcional)').setMaxLength(200)))
+    .addSubcommand((s) => s.setName('add').setDescription('Coloca alguém na conversa (staff)').addUserOption((o) => o.setName('membro').setDescription('Quem entra').setRequired(true)))
+    .addSubcommand((s) => s.setName('remover').setDescription('Tira alguém do ticket (staff)').addUserOption((o) => o.setName('membro').setDescription('Quem sai').setRequired(true)))
+    .addSubcommand((s) => s.setName('assumir').setDescription('Você vira o responsável pelo ticket (staff)'))
+    .addSubcommand((s) => s.setName('renomear').setDescription('Muda o nome do canal do ticket (staff)').addStringOption((o) => o.setName('nome').setDescription('Nome novo').setRequired(true).setMaxLength(40)))
+    .addSubcommand((s) => s.setName('painel').setDescription('Manda (ou reenvia) o painel com o menu (admin)').addChannelOption((o) => o.setName('canal').setDescription('Onde (padrão: aqui)').addChannelTypes(ChannelType.GuildText)))
+    .addSubcommand((s) => s.setName('config').setDescription('Link das configurações no site'))
+    .toJSON();
 }
 
 /** @param {import('discord.js').Guild} guild */
@@ -941,6 +971,8 @@ function infoServidor(guild) {
     membros: guild.memberCount,
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     moderacaoFaltando: NOMES_MODERACAO.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
+    ticketsFaltando: NOMES_TICKETS.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
+    categorias: guild.channels.cache.filter((c) => c.type === ChannelType.GuildCategory).sort((a, b) => a.rawPosition - b.rawPosition).map((c) => ({ id: c.id, nome: c.name })),
     hierarquia: {
       cargoDoBot: eu?.roles.highest.name ?? '?',
       temPermissao: !!eu?.permissions.has(P.ManageRoles),
@@ -1030,6 +1062,317 @@ async function postarPortaria(tipo, d) {
 }
 
 /** Dono do bot (quem criou a aplicação, ou o dono do time) */
+// ---------- Tickets ----------
+// Painel com menu de motivos → canal privado ticket-0042-fulano na categoria → Assumir / Adicionar / Fechar.
+// Fechar: transcrição (.html) no canal de logs e na DM, avaliação por estrelas na DM e o canal some depois de X segundos.
+const URL_SITE = (process.env.URL_PAINEL || 'https://pedroa07.github.io/Interface-Manda-Chuva-Bot/').replace(/\/?$/, '/');
+const PERMS_TICKET = [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles, P.EmbedLinks];
+const PERMS_TICKET_NOMES = { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true, EmbedLinks: true };
+const temConteudo = () => client.options.intents.has(I.MessageContent);
+
+/** A fila do bot (naFila) só registra erros no console: aqui o erro volta pra quem chamou */
+async function naFilaComErro(chave, tarefa) {
+  let resultado, falha;
+  await naFila(chave, async () => {
+    try {
+      resultado = await tarefa();
+    } catch (erro) {
+      falha = erro;
+    }
+  });
+  if (falha) throw falha;
+  return resultado;
+}
+
+/** Staff dos tickets: tem o cargo escolhido ou "Gerenciar servidor" */
+const ehStaffTicket = (membro, t = dados.config().tickets) => membro.permissions.has(P.ManageGuild) || (!!t.staffId && membro.roles.cache.has(t.staffId));
+
+/** Mensagem do painel de tickets (com a imagem anexada se for banner "Eventos" ou arquivo enviado) */
+async function montarPainelTickets(guild, t = dados.config().tickets) {
+  const { url, arquivos } = await imagensDaMensagem({ imagem: t.imagem }, guild);
+  return montarV2({ ...pedacoDoPainelTickets(t, url), arquivos: arquivos() });
+}
+
+/** Salvar: cria a categoria nova se pediram e põe (ou atualiza) o painel no canal escolhido */
+async function prepararTickets(guild, cfg, rel) {
+  const t = cfg.tickets;
+  if (t.categoriaId === 'nova') {
+    try {
+      const cat = await guild.channels.create({
+        name: '🎫 TICKETS',
+        type: ChannelType.GuildCategory,
+        permissionOverwrites: [{ id: guild.id, deny: [P.ViewChannel] }, ...(t.staffId ? [{ id: t.staffId, allow: PERMS_TICKET }] : []), { id: client.user.id, allow: [...PERMS_TICKET, P.ManageChannels] }],
+      });
+      t.categoriaId = cat.id;
+      rel.push('Criei a categoria 🎫 TICKETS.');
+    } catch (erro) {
+      t.categoriaId = null;
+      rel.push(`⚠️ Não consegui criar a categoria dos tickets: ${explicarErro(erro)}`);
+    }
+  }
+}
+
+async function publicarPainelTickets(guild, rel, cfg = dados.config()) {
+  const t = cfg.tickets;
+  const atual = lerTickets().painel;
+  if (!t.on || !t.canalId) return;
+  const canal = guild.channels.cache.get(t.canalId);
+  if (!canal?.isTextBased()) return rel.push('⚠️ O canal do botão dos tickets não existe mais.');
+  try {
+    const msg = await montarPainelTickets(guild, t);
+    if (atual?.canalId === canal.id) {
+      const ok = await canal.messages.edit(atual.mensagemId, { ...msg, attachments: [] }).then(() => true, (erro) => {
+        if ([10003, 10008].includes(erro.code)) return false;
+        throw erro;
+      });
+      if (ok) return;
+    }
+    const nova = await canal.send(msg);
+    if (atual) await guild.channels.cache.get(atual.canalId)?.messages?.delete(atual.mensagemId).catch(() => {});
+    await salvarTickets({ painel: { canalId: canal.id, mensagemId: nova.id } });
+    rel.push(`Painel de tickets enviado em #${canal.name}.`);
+  } catch (erro) {
+    rel.push(`⚠️ Não consegui pôr o painel de tickets em #${canal.name}: ${explicarErro(erro)}`);
+  }
+}
+
+/** Abre o ticket e devolve o canal. Erros viram mensagem pra pessoa. @param {import('discord.js').GuildMember} membro */
+async function abrirTicket(guild, membro, indice) {
+  const t = dados.config().tickets;
+  if (!t.on) throw comStatus(400, 'Os tickets estão desligados agora. Chama a staff de outro jeito.');
+  const motivo = t.motivos[indice];
+  if (!motivo?.on) throw comStatus(400, 'Esse motivo não existe mais. Escolhe outro.');
+  const meus = abertosDe(membro.id).filter((x) => guild.channels.cache.has(x.canalId));
+  if (meus.length >= t.limite) throw comStatus(400, `Você já tem ${meus.length === 1 ? 'um ticket aberto' : `${meus.length} tickets abertos`}: ${meus.map((x) => `<#${x.canalId}>`).join(', ')}. Fecha antes de abrir outro.`);
+  const categoria = t.categoriaId ? guild.channels.cache.get(t.categoriaId) : null;
+  const num = reservarNumero();
+  const canal = await guild.channels.create({
+    name: nomeDoCanal(num, membro.user.username),
+    type: ChannelType.GuildText,
+    parent: categoria?.type === ChannelType.GuildCategory ? categoria.id : undefined,
+    topic: `Ticket #${numero(num)} · ${motivo.nome} · aberto por ${membro.user.username}`,
+    permissionOverwrites: [
+      { id: guild.id, deny: [P.ViewChannel] },
+      { id: membro.id, allow: PERMS_TICKET },
+      ...(t.staffId && guild.roles.cache.has(t.staffId) ? [{ id: t.staffId, allow: [...PERMS_TICKET, P.ManageMessages] }] : []),
+      { id: client.user.id, allow: [...PERMS_TICKET, P.ManageChannels] },
+    ],
+  });
+  const ticket = { num, canalId: canal.id, userId: membro.id, nome: membro.displayName, motivo: motivo.nome, emoji: motivo.emoji, aberto: Date.now(), resp: null, respNome: null };
+  await salvarTickets({ abertos: [...lerTickets().abertos, ticket] });
+  await canal.send(montarV2(pedacoDasBoasVindas(ticket, t, { staffId: guild.roles.cache.has(t.staffId) ? t.staffId : null, media: mediaDeResposta(lerTickets().fechados) })));
+  return canal;
+}
+
+async function assumirTicket(ticket, membro) {
+  if (ticket.resp === membro.id) return `Você já é o responsável pelo ticket #${numero(ticket.num)}.`;
+  const t = lerTickets();
+  const atualizado = { ...ticket, resp: membro.id, respNome: membro.displayName, assumidoEm: ticket.assumidoEm ?? Date.now() };
+  await salvarTickets({ abertos: t.abertos.map((x) => (x.num === ticket.num ? atualizado : x)) });
+  return null;
+}
+
+/** Lê o canal inteiro (até 2000 mensagens), da mais antiga pra mais nova */
+async function mensagensDoCanal(canal) {
+  const todas = [];
+  let antes;
+  for (let i = 0; i < 20; i++) {
+    const lote = await canal.messages.fetch({ limit: 100, ...(antes && { before: antes }) });
+    todas.push(...lote.values());
+    if (lote.size < 100) break;
+    antes = lote.lastKey();
+  }
+  const semTexto = !temConteudo();
+  return todas.reverse().map((m) => ({
+    autor: m.member?.displayName ?? m.author.username,
+    avatar: m.author.displayAvatarURL({ size: 64, extension: 'png' }),
+    bot: m.author.bot,
+    ts: m.createdTimestamp,
+    // Sem a intent "Message Content", o Discord manda o texto vazio (menos das mensagens do próprio bot)
+    texto: m.content || (semTexto && !m.author.bot ? '(texto escondido: ligue a Message Content Intent no portal do Discord)' : ''),
+    anexos: [...m.attachments.values()].map((a) => ({ nome: a.name, url: a.url })),
+  }));
+}
+
+/**
+ * Fecha: avisa no canal, salva a transcrição, manda DM com avaliação, arquiva e agenda o canal pra sumir.
+ * por: quem fechou (membro) ou null (o próprio bot, por ficar parado)
+ */
+async function fecharTicket(guild, ticketPedido, { porId, porNome, motivo }) {
+  return naFilaComErro(`ticket:${ticketPedido.num}`, async () => {
+    // Dois cliques em Fechar ao mesmo tempo: o segundo não acha mais o ticket aberto
+    const ticket = lerTickets().abertos.find((x) => x.num === ticketPedido.num);
+    if (ticket) await fecharDeVez(guild, ticket, { porId, porNome, motivo });
+  });
+}
+
+async function fecharDeVez(guild, ticket, { porId, porNome, motivo }) {
+  const t = dados.config().tickets;
+  const canal = guild.channels.cache.get(ticket.canalId);
+  const fechado = Date.now();
+  const dono = await client.users.fetch(ticket.userId).catch(() => null);
+  const logs = t.transLog && t.logsId ? guild.channels.cache.get(t.logsId) : null;
+  let arquivo = null, qtd = 0;
+  if (canal?.isTextBased() && (logs || (t.transDm && dono))) {
+    const msgs = await mensagensDoCanal(canal).catch(() => []);
+    qtd = msgs.length;
+    const html = transcricao({ ticket, servidor: guild.name, fechadoPor: porNome, motivo, fechado, mensagens: msgs });
+    arquivo = () => ({ attachment: Buffer.from(html, 'utf8'), name: `ticket-${numero(ticket.num)}.html` });
+  }
+  const textoTransc = textoDaTranscricao(t, { logs: logs ? `<#${logs.id}>` : null, quem: dono ? `<@${dono.id}>` : 'quem abriu' });
+  if (canal?.isTextBased()) {
+    await canal.send(montarV2(pedacoDoFechamento(t, { por: porId ? `<@${porId}>` : porNome, motivo, transcricao: textoTransc }))).catch(() => {});
+  }
+  if (logs?.isTextBased() && arquivo) {
+    const resumo = `🎫 **Ticket #${numero(ticket.num)}** · ${ticket.emoji} ${ticket.motivo} · aberto por <@${ticket.userId}>${ticket.resp ? `, atendido por <@${ticket.resp}>` : ''}, fechado por ${porId ? `<@${porId}>` : porNome}${motivo ? ` (${motivo})` : ''} · ${qtd} mensagens`;
+    await logs.send({ content: resumo, files: [arquivo()], allowedMentions: { parse: [] } }).catch((erro) => console.error('Transcrição no canal de logs:', explicarErro(erro)));
+  }
+  if (dono) {
+    if (t.transDm && arquivo) await dono.send({ content: `Comprovante do seu ticket #${numero(ticket.num)} (${ticket.motivo}) no **${guild.name}**.`, files: [arquivo()] }).catch(() => {});
+    if (t.avaliacao) await dono.send(montarV2(pedacoDaAvaliacao(ticket, guild.name))).catch(() => {});
+  }
+  await arquivar(ticket, { fechado, porId: porId ?? null, porNome, motivoFechamento: motivo || null });
+  if (canal) {
+    const em = fechado + APAGAR[t.apagar][0];
+    await salvarTickets({ apagar: [...lerTickets().apagar, { canalId: canal.id, em }] });
+    setTimeout(() => apagarCanaisFechados().catch(() => {}), APAGAR[t.apagar][0] + 500);
+  }
+}
+
+/** Apaga os canais de tickets fechados que já passaram do prazo (também roda depois de reiniciar) */
+async function apagarCanaisFechados() {
+  const { apagar } = lerTickets();
+  const agora = Date.now();
+  const vencidos = apagar.filter((a) => a.em <= agora);
+  if (!vencidos.length) return;
+  for (const a of vencidos) {
+    const canal = client.channels.cache.get(a.canalId);
+    if (canal) await canal.delete('Ticket fechado').catch((erro) => ![10003].includes(erro.code) && console.error('Apagar ticket:', explicarErro(erro)));
+  }
+  await salvarTickets({ apagar: lerTickets().apagar.filter((a) => !vencidos.includes(a)) });
+}
+
+/** A cada 10 min: tira da fila ticket com canal apagado na mão e fecha os parados */
+async function conferirTickets() {
+  await vestirMascote();
+  const guild = servidor();
+  if (!guild || soPainel) return;
+  await apagarCanaisFechados();
+  const t = dados.config().tickets;
+  for (const ticket of lerTickets().abertos) {
+    const canal = guild.channels.cache.get(ticket.canalId);
+    if (!canal) {
+      await arquivar(ticket, { fechado: Date.now(), porId: null, porNome: 'canal apagado no Discord', motivoFechamento: null });
+      continue;
+    }
+    const ultima = canal.lastMessageId ? Math.max(ticket.aberto, SnowflakeUtil.timestampFrom(canal.lastMessageId)) : ticket.aberto;
+    if (estaParado(ultima, t.parado)) await fecharTicket(guild, ticket, { porId: null, porNome: 'Manda Chuva', motivo: `parado há mais de ${PARADO[t.parado][1]}` }).catch((erro) => console.error('Ticket parado:', explicarErro(erro)));
+  }
+}
+
+/** Ticket do canal onde a interação aconteceu, ou erro */
+function ticketAqui(canalId) {
+  const ticket = ticketDoCanal(canalId);
+  if (!ticket) throw comStatus(400, 'Isso só funciona dentro de um canal de ticket aberto.');
+  return ticket;
+}
+
+/** É botão, menu ou comando de ticket (menos a avaliação na DM)? */
+const ehDeTicket = (i) => (i.isChatInputCommand() && i.commandName === 'ticket') || ('customId' in i && i.customId.startsWith('tk:'));
+
+/** Botões, menus e /ticket. @param {import('discord.js').Interaction<'cached'>} i */
+async function responderTicket(i) {
+  const ehComando = i.isChatInputCommand();
+  const id = 'customId' in i ? i.customId : '';
+  const efemero = (texto) => ({ content: texto, flags: MessageFlags.Ephemeral, allowedMentions: { parse: [] } });
+  const responder = (texto) => (i.deferred && !i.replied ? i.editReply(texto) : i.replied ? i.followUp(efemero(texto)) : i.reply(efemero(texto)));
+  try {
+    const t = dados.config().tickets;
+    const staff = ehStaffTicket(i.member, t);
+    const sub = ehComando ? i.options.getSubcommand() : id.slice(3);
+    if (sub === 'abrir') {
+      const indice = ehComando ? Number(i.options.getString('motivo', true)) : Number(i.values[0]);
+      // Menu: atualiza a mensagem com os mesmos componentes pra ele voltar ao "Escolha o motivo"
+      if (ehComando) await i.deferReply({ flags: MessageFlags.Ephemeral });
+      else await i.update({ components: i.message.components }).catch(() => i.deferReply({ flags: MessageFlags.Ephemeral }));
+      const canal = await naFilaComErro(`tickets:${i.guildId}`, () => abrirTicket(i.guild, i.member, indice));
+      return void (await responder(`Pronto! Seu ticket: ${canal}`));
+    }
+    if (sub === 'config') return void (await responder(`As configurações dos tickets ficam no painel: ${URL_SITE}`));
+    if (sub === 'painel') {
+      if (!i.memberPermissions.has(P.ManageGuild)) throw comStatus(403, 'Só quem pode gerenciar o servidor manda o painel.');
+      await i.deferReply({ flags: MessageFlags.Ephemeral });
+      const canal = i.options.getChannel('canal') ?? i.channel;
+      const cfg = structuredClone(dados.config());
+      cfg.tickets.canalId = canal.id;
+      cfg.tickets.on = true;
+      dados.salvarConfig(cfg);
+      const rel = [];
+      await publicarPainelTickets(i.guild, rel, cfg);
+      return void (await i.editReply(rel.join('\n') || `O painel já estava em ${canal}.`));
+    }
+    const ticket = ticketAqui(i.channelId);
+    if (sub === 'assumir') {
+      if (!staff) throw comStatus(403, 'Só a staff assume ticket.');
+      const ja = await assumirTicket(ticket, i.member);
+      if (ja) return void (await responder(ja));
+      return void (await i.reply({ content: `🙋 ${i.member} assumiu o ticket.`, allowedMentions: { parse: [] } }));
+    }
+    if (sub === 'fechar') {
+      if (!staff && i.user.id !== ticket.userId) throw comStatus(403, 'Só a staff e quem abriu podem fechar.');
+      await i.reply(efemero('Fechando…'));
+      return void (await fecharTicket(i.guild, ticket, { porId: i.user.id, porNome: i.member.displayName, motivo: ehComando ? (i.options.getString('motivo') ?? '').slice(0, 200) : '' }));
+    }
+    if (!staff) throw comStatus(403, 'Só a staff mexe em quem está no ticket.');
+    if (sub === 'add' && !ehComando) {
+      return void (await i.reply({ ...efemero('Quem entra no ticket?'), components: [{ type: 1, components: [{ type: 5, custom_id: 'tk:addsel', placeholder: 'Escolha os membros', min_values: 1, max_values: 5 }] }] }));
+    }
+    const canal = /** @type {import('discord.js').TextChannel} */ (i.channel);
+    if (sub === 'addsel' || sub === 'add') {
+      const ids = sub === 'addsel' ? i.values : [i.options.getUser('membro', true).id];
+      for (const u of ids) await canal.permissionOverwrites.edit(u, PERMS_TICKET_NOMES);
+      const quem = ids.map((u) => `<@${u}>`).join(', ');
+      if (sub === 'addsel') await i.update({ content: `Adicionei ${quem}.`, components: [] });
+      else await i.reply(efemero(`Adicionei ${quem}.`));
+      return void (await canal.send({ content: `➕ ${quem} entrou no ticket (por ${i.member}).`, allowedMentions: { users: ids } }));
+    }
+    if (sub === 'remover') {
+      const u = i.options.getUser('membro', true);
+      if (u.id === ticket.userId) throw comStatus(400, 'Quem abriu o ticket não sai dele. Fecha o ticket.');
+      await canal.permissionOverwrites.delete(u.id);
+      await i.reply(efemero(`Tirei ${u} do ticket.`));
+      return void (await canal.send({ content: `➖ ${u} saiu do ticket (por ${i.member}).`, allowedMentions: { parse: [] } }));
+    }
+    if (sub === 'renomear') {
+      const nome = i.options.getString('nome', true);
+      await canal.setName(nomeDoCanal(ticket.num, nome));
+      return void (await i.reply(efemero(`Agora o canal se chama #${canal.name}.`)));
+    }
+  } catch (erro) {
+    await responder(`⚠️ ${erro.status ? erro.message : explicarErro(erro)}`).catch(() => {});
+  }
+}
+
+/** Nota na DM (botões tkn:<num>:<nota>) */
+async function avaliarTicket(i) {
+  const [, num, nota] = i.customId.split(':').map(Number);
+  const f = avaliar(num, nota);
+  const guild = servidor();
+  const msg = montarV2(pedacoDaAvaliacao(f ?? { num, motivo: 'ticket' }, guild?.name ?? 'servidor', nota));
+  await i.update({ components: msg.components });
+  const t = dados.config().tickets;
+  const logs = f && t.logsId ? guild?.channels.cache.get(t.logsId) : null;
+  if (logs?.isTextBased()) await logs.send({ content: `⭐ Ticket #${numero(num)} (${f.motivo}${f.respNome ? `, atendido por ${f.respNome}` : ''}) ganhou nota **${nota}/5**.`, allowedMentions: { parse: [] } }).catch(() => {});
+}
+
+/** Fila do painel: abertos, do mais novo pro mais velho */
+function filaDeTickets(guild) {
+  return lerTickets()
+    .abertos.filter((x) => guild.channels.cache.has(x.canalId))
+    .sort((a, b) => b.aberto - a.aberto)
+    .map((x) => ({ num: numero(x.num), emoji: x.emoji, quem: x.nome, userId: x.userId, motivo: x.motivo, aberto: x.aberto, quando: haQuanto(x.aberto), resp: x.respNome, canalId: x.canalId, link: `https://discord.com/channels/${guild.id}/${x.canalId}` }));
+}
+
 async function donoDoBot() {
   const app = await client.application.fetch();
   const dono = app.owner;
@@ -1046,7 +1389,7 @@ export const api = {
     const guild = servidor(servidorId || cfg.servidorId);
     const user = client.isReady() ? client.user : null;
     // recursos.membros = a intent "Server Members" está liberada no portal (sem ela: sem contagem de membros)
-    const recursos = { membros: temMembros() };
+    const recursos = { membros: temMembros(), conteudo: temConteudo() };
     return {
       config: cfg,
       bot: user
@@ -1057,6 +1400,7 @@ export const api = {
       noticias: NOVIDADES,
       aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
       ocorrencias: guild ? lerOcorrencias().slice(0, 100) : [],
+      tickets: guild ? filaDeTickets(guild) : [],
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -1080,10 +1424,12 @@ export const api = {
       await sincronizarCargos(guild, cfg, rel);
       await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
       await sincronizarAutomod(guild, cfg, rel);
+      await prepararTickets(guild, cfg, rel);
     } else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
     dados.salvarConfig(cfg);
     if (guild) {
       await atualizarPaineis(guild, rel);
+      await publicarPainelTickets(guild, rel, cfg);
       await registrarComandos(guild);
       const velho = antes !== cfg.servidorId ? servidor(antes) : null;
       if (velho) await velho.commands.set([]).catch(() => {});
@@ -1128,6 +1474,27 @@ export const api = {
     await dados.esperarGravacao();
     const agora = await guild.members.fetch({ user: membro.id, force: true }).catch(() => null);
     return { ok: true, mensagem, membro: agora ? descreverMembro(agora) : null };
+  },
+
+  // Fila de tickets no painel: Fechar (e Assumir, quando o painel sabe quem é a pessoa)
+  async ticketAcao(corpo) {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const ticket = lerTickets().abertos.find((x) => numero(x.num) === String(corpo?.num ?? ''));
+    if (!ticket) throw comStatus(404, 'Esse ticket já foi fechado.');
+    if (corpo?.acao === 'fechar') {
+      await fecharTicket(guild, ticket, { porId: null, porNome: 'a staff (pelo painel)', motivo: String(corpo.motivo ?? '').trim().slice(0, 200) });
+      await dados.esperarGravacao();
+      return { ok: true, mensagem: `Ticket #${numero(ticket.num)} fechado. O canal some em ${APAGAR[dados.config().tickets.apagar][1]}.` };
+    }
+    if (corpo?.acao === 'assumir') {
+      const membro = await guild.members.fetch(String(corpo.userId ?? '')).catch(() => null);
+      if (!membro) throw comStatus(400, 'Não sei quem você é no servidor.');
+      const ja = await assumirTicket(ticket, membro);
+      if (!ja) await guild.channels.cache.get(ticket.canalId)?.send({ content: `🙋 ${membro} assumiu o ticket (pelo painel).`, allowedMentions: { parse: [] } }).catch(() => {});
+      return { ok: true, mensagem: ja ?? `Você assumiu o ticket #${numero(ticket.num)}.` };
+    }
+    throw comStatus(400, 'Ação desconhecida.');
   },
 
   // Livro de ocorrências: desfaz aviso, silêncio ou ban (expulsão não tem volta)
@@ -1274,6 +1641,8 @@ function prepararCliente(c) {
     if (!soPainel) {
       setTimeout(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 20_000);
       setInterval(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 10 * 60_000);
+      setTimeout(() => conferirTickets().catch((e) => console.error('Tickets:', e.message)), 25_000);
+      setInterval(() => conferirTickets().catch((e) => console.error('Tickets:', e.message)), 10 * 60_000);
     }
     // Virou o dia e mudou a data festiva? Os painéis já enviados trocam de visual sozinhos
     if (!soPainel) {
