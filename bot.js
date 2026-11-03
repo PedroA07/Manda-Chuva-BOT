@@ -181,7 +181,7 @@ async function responderInteracao(interacao) {
     medalhas: responderMedalhas,
     tema: responderTema,
     privacidade: responderPrivacidade,
-    painel: (i) => i.reply(efemero({ content: `Painel do site (entre com o Discord): ${URL_SITE}painel.html` })),
+    painel: responderPainel,
   }[interacao.commandName];
   if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
@@ -316,7 +316,11 @@ export function comandos(cfg = dados.config()) {
       .toJSON(),
     new SlashCommandBuilder().setName('perfil').setDescription('Mostra o perfil com banner e medalhas').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
-    new SlashCommandBuilder().setName('painel').setDescription('Link do painel do site').toJSON(),
+    new SlashCommandBuilder()
+      .setName('painel')
+      .setDescription('Link do painel do site (notícias, membros e seu perfil)')
+      .addBooleanOption((o) => o.setName('mostrar').setDescription('Mandar no canal pra todo mundo ver (padrão: só pra você)'))
+      .toJSON(),
     new SlashCommandBuilder()
       .setName('tema')
       .setDescription('Datas festivas (staff)')
@@ -1579,6 +1583,20 @@ async function responderTema(i) {
   // A prévia vai numa mensagem nova (a resposta adiada é de texto e não vira layout novo do Discord)
   await i.editReply(`Prévia do painel de cores em **${tema.nome}** (só você vê; nada mudou no servidor):`);
   await i.followUp(efemero(msg));
+}
+
+/** /painel: cartão com os botões que abrem o site (o Discord abre o link direto, sem copiar e colar) */
+async function responderPainel(i) {
+  const msg = montarV2({
+    cor: 0xf2c14e,
+    titulo: '🎓 Painel do Manda Chuva',
+    texto: 'Entra com a sua conta do Discord pra ver as notícias do bot, a turma toda e montar o seu perfil com banner e medalhas. A staff configura o bot por lá também.',
+    linhas: [{ type: 1, components: [
+      { type: 2, style: 5, label: 'Abrir painel', emoji: { name: '🖥️' }, url: `${URL_SITE}painel.html` },
+      { type: 2, style: 5, label: 'Central do Bot', emoji: { name: '📘' }, url: `${URL_SITE}central.html` },
+    ] }],
+  });
+  await i.reply(i.options.getBoolean('mostrar') ? msg : efemero(msg));
 }
 
 /** /privacidade ver | apagar: o que o bot guarda da pessoa e o botão pra apagar */
