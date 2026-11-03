@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import { test } from 'node:test';
 import { iniciarApi } from '../api.js';
+import { criarSessao } from '../lib/sessao.js';
 import { VERSAO } from '../lib/versao.js';
 
 /** Sobe a API numa porta livre com uma api falsa e devolve o endereço */
@@ -49,6 +50,43 @@ test('/saude mostra a versão do bot', async (t) => {
   const { servidor, base } = await subir({ saude: () => ({ ok: true, bot: 'offline' }) });
   t.after(() => servidor.close());
   const r = await fetch(`${base}/saude`);
-  assert.deepEqual(await r.json(), { ok: true, bot: 'offline', versao: VERSAO });
+  assert.deepEqual(await r.json(), { ok: true, bot: 'offline', versao: VERSAO, login: false });
   assert.match(VERSAO, /^\d+\.\d+\.\d+$/);
+});
+
+test('níveis: senha é admin; sessão do Discord vale o papel no servidor', async (t) => {
+  const papeis = { '111111111111111111': 'membro', '222222222222222222': 'staff' };
+  const vistos = [];
+  const { servidor, base } = await subir({
+    saude: () => ({}),
+    papelDe: async (id) => papeis[id] ?? null,
+    eu: (quem) => quem,
+    estado: () => ({ cheio: true }),
+    salvar: (c, quem) => (vistos.push(quem.papel), { ok: true }),
+  }, { senha: 'senha-bem-grande-123' });
+  t.after(() => servidor.close());
+  const pedir = (caminho, auth, corpo) =>
+    fetch(base + caminho, { method: corpo ? 'POST' : 'GET', headers: { 'X-Painel': '1', 'Content-Type': 'application/json', ...(auth && { Authorization: auth }) }, body: corpo && JSON.stringify(corpo) });
+  const sessao = (id) => `Sessao ${criarSessao({ id, nome: 'x', usuario: 'x' })}`;
+  assert.equal((await pedir('/api/estado')).status, 401);
+  assert.equal((await pedir('/api/estado', 'Bearer senha-bem-grande-123')).status, 200);
+  assert.equal((await (await pedir('/api/eu', 'Bearer senha-bem-grande-123')).json()).papel, 'admin');
+  // Membro: entra no /api/eu mas não na parte da staff
+  assert.equal((await (await pedir('/api/eu', sessao('111111111111111111'))).json()).papel, 'membro');
+  assert.equal((await pedir('/api/estado', sessao('111111111111111111'))).status, 403);
+  // Staff: entra e salva (a api recebe quem salvou)
+  assert.equal((await pedir('/api/salvar', sessao('222222222222222222'), {})).status, 200);
+  assert.deepEqual(vistos, ['staff']);
+  // Fora do servidor ou sessão inválida
+  assert.equal((await pedir('/api/eu', sessao('333333333333333333'))).status, 403);
+  assert.equal((await pedir('/api/eu', 'Sessao lixo')).status, 401);
+});
+
+test('login com Discord desligado volta pro site com o aviso; volta não liberada é recusada', async (t) => {
+  const { servidor, base } = await subir({ saude: () => ({}), clientId: () => '42' }, { origens: ['https://site.exemplo'] });
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/auth/entrar?volta=${encodeURIComponent('https://site.exemplo/painel/')}`, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('location'), 'https://site.exemplo/painel/#erro=login-desligado');
+  assert.equal((await fetch(`${base}/auth/entrar?volta=https://golpe.com/`, { redirect: 'manual' })).status, 400);
 });
