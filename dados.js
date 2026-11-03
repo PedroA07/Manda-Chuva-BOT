@@ -90,6 +90,22 @@ PADRAO.moderacao = {
   },
   palavras: PALAVROES,
 };
+// Tickets (lib/tickets.js): o membro escolhe o motivo no painel e ganha um canal privado com a staff. Desligado até configurarem.
+// categoriaId 'nova' = o bot cria a categoria ao salvar.
+PADRAO.tickets = {
+  on: false, categoriaId: null, canalId: null, staffId: null, logsId: null,
+  limite: 1, parado: '24h', apagar: '10s', transLog: true, transDm: true, avaliacao: true, mencionar: true,
+  titulo: '🎫 Precisa de ajuda?',
+  desc: 'Abre um ticket aqui embaixo e a staff te chama num canal privado.\nNada de treta no #geral, combinado?',
+  imagem: '',
+  motivos: [
+    ['❓', 'Dúvida', 'Pergunta sobre o servidor ou o bot'], ['🚨', 'Denúncia', 'Alguém passou dos limites'],
+    ['🤝', 'Parceria', 'Divulgação, eventos, collab'], ['🐛', 'Bug do bot', 'O Manda Chuva fez besteira'], ['🎨', 'Cargo', 'Pedir ou trocar um cargo'],
+  ].map(([emoji, nome, desc]) => ({ emoji, nome, desc, on: true })),
+};
+export const PARADOS = ['12h', '24h', '48h', 'nunca'];
+export const APAGARES = ['agora', '5s', '10s', '1min', '5min'];
+export const MAX_MOTIVOS = 25; // limite de opções do menu do Discord
 export const ACOES_AUTOMOD = ['apagar', 'avisar', 'silenciar', 'expulsar'];
 export const EVENTOS = { entrada: 'Entrou', saida: 'Saiu', expulsao: 'Expulso', ban: 'Banido', silencio: 'Silenciado' };
 export const DURACOES = ['10min', '1h', '1d', '7d', 'sem'];
@@ -327,6 +343,38 @@ const SECOES = {
       automod,
       // Filtro de palavrões: minúsculas, sem repetir, até 1000 de até 60 letras (limites do Discord)
       palavras: Array.isArray(m.palavras) ? [...new Set(m.palavras.map((x) => txt(x, 60).toLowerCase()).filter(Boolean))].slice(0, 1000) : [...p.palavras],
+    };
+  },
+
+  tickets(bruto, _atual, erros) {
+    const t = obj(bruto), p = PADRAO.tickets;
+    const sim = (v, padrao) => (typeof v === 'boolean' ? v : padrao);
+    const id = (v) => (typeof v === 'string' && ID.test(v) ? v : null);
+    const motivos = (Array.isArray(t.motivos) ? t.motivos : p.motivos).map(obj).map((m) => {
+      const emoji = txt(m.emoji, 64);
+      return { emoji: emoji && emojiValido(emoji) ? emoji : '📌', nome: txt(m.nome, 100), desc: txt(m.desc, 100), on: m.on !== false };
+    });
+    if (motivos.length > MAX_MOTIVOS) erros.push(`Tickets: até ${MAX_MOTIVOS} motivos (é o limite do menu do Discord).`);
+    if (motivos.some((m) => !m.nome)) erros.push('Tickets: todo motivo precisa de um nome.');
+    const on = sim(t.on, p.on);
+    if (on && !motivos.some((m) => m.on)) erros.push('Tickets: ligue pelo menos um motivo.');
+    return {
+      on,
+      categoriaId: t.categoriaId === 'nova' ? 'nova' : id(t.categoriaId),
+      canalId: id(t.canalId),
+      staffId: id(t.staffId),
+      logsId: id(t.logsId),
+      limite: [1, 2, 3].includes(t.limite) ? t.limite : p.limite,
+      parado: PARADOS.includes(t.parado) ? t.parado : p.parado,
+      apagar: APAGARES.includes(t.apagar) ? t.apagar : p.apagar,
+      transLog: sim(t.transLog, p.transLog),
+      transDm: sim(t.transDm, p.transDm),
+      avaliacao: sim(t.avaliacao, p.avaliacao),
+      mencionar: sim(t.mencionar, p.mencionar),
+      titulo: typeof t.titulo === 'string' ? txt(t.titulo, 200) : p.titulo,
+      desc: typeof t.desc === 'string' ? txt(t.desc, 1500) : p.desc,
+      imagem: imagem(t.imagem, 'Imagem do painel de tickets', erros),
+      motivos: motivos.slice(0, MAX_MOTIVOS),
     };
   },
 };

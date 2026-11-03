@@ -13,7 +13,7 @@ https://pedroa07.github.io/...        https://manda-chuva-bot.onrender.com
 
 1. Abra https://discord.com/developers/applications → **New Application** → dê o nome (ex.: Manda Chuva).
 2. Aba **Bot** → **Reset Token** → copie o token. Guarde: ele é a senha do bot.
-3. Na mesma aba, ligue **Server Members Intent** (o painel usa pra contar quem tem cada cor; a portaria e a moderação também vão usar). Sem ela o bot funciona, só sem essas partes: ele avisa no terminal e no painel.
+3. Na mesma aba, ligue **Server Members Intent** (o painel usa pra contar quem tem cada cor; a portaria e a moderação também vão usar) e **Message Content Intent** (o texto das mensagens na transcrição dos tickets). Sem elas o bot funciona, só sem essas partes: ele avisa no terminal e no painel.
 
 ## 2. Testar no seu PC (opcional)
 
@@ -71,6 +71,7 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - **Auto-moderação (aba Cargos › Moderação):** palavrões (lista editável), convites de outros servidores, chuva de menções (mais de 5) e links suspeitos viram regras "Manda Chuva · …" na AutoMod do próprio Discord (funcionam com o bot dormindo; precisa de "Gerenciar servidor"). O anti-spam (5 mensagens em 3 s) é o bot que conta pelos eventos de mensagem, sem ler o texto (precisa de "Gerenciar mensagens"). Ações: só apagar, avisar, silenciar 10 min ou expulsar. Cargos de moderação ficam de fora.
 - **Temas de datas festivas:** em cada data (Natal, Ano Novo, Carnaval, Páscoa...) o bot troca banner, miniatura, cor e põe a frase do tema nas mensagens marcadas em "Usar em". Quando dois temas caem no mesmo dia, ganha o de período menor. Carnaval e Páscoa são calculados todo ano. O dia é contado no horário de Brasília (`FUSO` troca). A cada 30 min o bot confere a data e atualiza os painéis já enviados.
 - Banners "Eventos" da galeria: o bot desenha a placa com o nome do seu servidor (rota pública `/placas/<evento>.jpg`).
+- **Tickets (aba Tickets):** o bot põe um menu de motivos no canal escolhido; quem escolhe ganha um canal privado `#ticket-0042-nome` na categoria (ou o bot cria a 🎫 TICKETS), com Assumir, Adicionar membro e Fechar. Ao fechar: transcrição `.html` no canal de logs e na DM, avaliação de 1 a 5 estrelas na DM e o canal some depois do prazo escolhido. Fecha sozinho ticket parado. Comandos `/ticket abrir, fechar, add, remover, assumir, renomear, painel, config`. Precisa de "Gerenciar canais"; sem a Message Content Intent a transcrição sai sem o texto.
 - **Jornal do Campus:** a cada versão nova, o bot posta a notícia no canal escolhido na aba Notícias do painel (desligado até você escolher o canal). Na primeira vez ele posta só a mais recente. Pra mencionar @everyone, o cargo do bot precisa da permissão "Mencionar @everyone".
 - `#000000` no Discord é "sem cor". Pra preto use `#010101`.
 - Limites do Discord: até 24 cores, 40 peças e 4000 letras por mensagem (o painel avisa antes de salvar).

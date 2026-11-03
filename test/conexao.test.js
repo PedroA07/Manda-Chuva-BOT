@@ -30,7 +30,7 @@ test('com a intent liberada, conecta com tudo', async () => {
   const f = fabrica(PEDIDAS);
   const { client, recursos } = await conectar('t', f.criar, PEDIDAS, { silencioso: true });
   assert.equal(client, f.criados[0]);
-  assert.deepEqual(recursos, { membros: true });
+  assert.deepEqual(recursos, { membros: true, conteudo: false });
 });
 
 test('sem a intent "Server Members" no portal, reconecta sem ela', async () => {
@@ -39,10 +39,27 @@ test('sem a intent "Server Members" no portal, reconecta sem ela', async () => {
   assert.equal(f.criados.length, 2);
   assert.equal(f.criados[0].destruido, true);
   assert.deepEqual(client.intents, [I.Guilds, I.GuildExpressions]);
-  assert.deepEqual(recursos, { membros: false });
+  assert.deepEqual(recursos, { membros: false, conteudo: false });
 });
 
 test('outro erro (token errado) não é engolido', async () => {
   const criar = () => ({ login: async () => { throw new Error('An invalid token was provided.'); }, destroy() {} });
   await assert.rejects(conectar('t', criar, PEDIDAS, { silencioso: true }), /invalid token/);
+});
+
+test('sem "Message Content" no portal, fica com "Server Members"', async () => {
+  const COM = [...PEDIDAS, I.MessageContent];
+  const f = fabrica(PEDIDAS);
+  const { client, recursos } = await conectar('t', f.criar, COM, { silencioso: true });
+  assert.equal(f.criados.length, 2);
+  assert.deepEqual(client.intents, PEDIDAS);
+  assert.deepEqual(recursos, { membros: true, conteudo: false });
+});
+
+test('com as duas liberadas, conecta com a transcrição completa', async () => {
+  const COM = [...PEDIDAS, I.MessageContent];
+  const f = fabrica(COM);
+  const { recursos } = await conectar('t', f.criar, COM, { silencioso: true });
+  assert.equal(f.criados.length, 1);
+  assert.deepEqual(recursos, { membros: true, conteudo: true });
 });
