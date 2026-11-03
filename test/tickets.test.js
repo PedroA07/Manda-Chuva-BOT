@@ -31,13 +31,15 @@ test('config: padrão desligado com 5 motivos; motivo sem nome e motivos demais 
   assert.match(ligadoSemMotivo.erros.join(), /pelo menos um motivo/);
 });
 
-test('config: valores fora da lista voltam pro padrão; categoria "nova" passa', () => {
-  const { cfg, erros } = normalizar({ tickets: { ...T(), limite: 9, parado: '3h', apagar: 'nunca', categoriaId: 'nova', staffId: 'abc', motivos: [{ emoji: 'texto', nome: 'Oi', desc: 'd' }] } });
+test('config: valores fora da lista voltam pro padrão; categoria "nova" e canais "novo" passam', () => {
+  const { cfg, erros } = normalizar({ tickets: { ...T(), limite: 9, parado: '3h', apagar: 'nunca', categoriaId: 'nova', canalId: 'novo', logsId: 'novo', staffId: 'abc', motivos: [{ emoji: 'texto', nome: 'Oi', desc: 'd' }] } });
   assert.deepEqual(erros, []);
   assert.equal(cfg.tickets.limite, 1);
   assert.equal(cfg.tickets.parado, '24h');
   assert.equal(cfg.tickets.apagar, '10s');
   assert.equal(cfg.tickets.categoriaId, 'nova');
+  assert.equal(cfg.tickets.canalId, 'novo');
+  assert.equal(cfg.tickets.logsId, 'novo');
   assert.equal(cfg.tickets.staffId, null);
   assert.equal(cfg.tickets.motivos[0].emoji, '📌'); // emoji inválido vira o alfinete
 });

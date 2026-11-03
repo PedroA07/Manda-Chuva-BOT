@@ -35,8 +35,8 @@ import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
-import { contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { DE_EVENTO, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil } from './lib/perfil.js';
+import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
+import { apagarPerfil, DE_EVENTO, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil } from './lib/perfil.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -175,6 +175,15 @@ async function responderInteracao(interacao) {
   if (!interacao.inCachedGuild()) return;
   if (ehDeTicket(interacao)) return responderTicket(interacao).catch((erro) => console.error('Ticket:', erro));
   if (interacao.isChatInputCommand() && interacao.commandName === 'medalha') return responderMedalha(interacao);
+  if (interacao.isButton() && interacao.customId.startsWith('priv:apagar:')) return apagarMeusDados(interacao).catch((erro) => console.error('Privacidade:', erro));
+  const outro = interacao.isChatInputCommand() && {
+    perfil: responderPerfil,
+    medalhas: responderMedalhas,
+    tema: responderTema,
+    privacidade: responderPrivacidade,
+    painel: (i) => i.reply(efemero({ content: `Painel do site (entre com o Discord): ${URL_SITE}painel.html` })),
+  }[interacao.commandName];
+  if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
@@ -259,11 +268,11 @@ async function imagensDaMensagem(imgs, guild) {
 }
 
 /** Mensagem do painel no layout novo. @param {import('discord.js').Guild} guild */
-export async function montarMensagem(guild, cfg = dados.config()) {
+export async function montarMensagem(guild, cfg = dados.config(), temaEscolhido) {
   // Menção de cargo aparece com a cor do cargo; allowedMentions vazio garante que não marca ninguém
   const mencao = (cor) => (cor.cargoId && guild.roles.cache.has(cor.cargoId) ? `<@&${cor.cargoId}>` : `**${cor.nome}**`);
   // Data festiva no ar: banner, miniatura e cor do tema, com a frase em cima do texto
-  const tema = aplicarTema('painel', cfg.painel.imgs, temaDeHoje(cfg), cfg.temas.respeitar);
+  const tema = aplicarTema('painel', cfg.painel.imgs, temaEscolhido ?? temaDeHoje(cfg), cfg.temas.respeitar);
   const c = tema ? { ...cfg, painel: { ...cfg.painel, imgs: tema.imgs, corDoEmbed: tema.cor } } : cfg;
   const { url, arquivos } = await imagensDaMensagem(c.painel.imgs, guild);
   const pedaco = pedacoDoPainel(c, { mencao, bolinhas: await bolinhasDoPainel(c), url });
@@ -304,6 +313,20 @@ export function comandos(cfg = dados.config()) {
       .addUserOption((o) => o.setName('membro').setDescription('Quem ganha').setRequired(true))
       .addStringOption((o) => o.setName('medalha').setDescription('Qual medalha').setRequired(true).addChoices(...MEDALHAS.filter((m) => DE_EVENTO.includes(m.id)).map((m) => ({ name: m.nome, value: m.id }))))
       .addIntegerOption((o) => o.setName('quantidade').setDescription('Quantas vezes (negativo tira; padrão 1)').setMinValue(-10).setMaxValue(10))
+      .toJSON(),
+    new SlashCommandBuilder().setName('perfil').setDescription('Mostra o perfil com banner e medalhas').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
+    new SlashCommandBuilder().setName('painel').setDescription('Link do painel do site').toJSON(),
+    new SlashCommandBuilder()
+      .setName('tema')
+      .setDescription('Datas festivas (staff)')
+      .addSubcommand((s) => s.setName('simular').setDescription('Prévia de uma festa antes da data (só pra você)').addStringOption((o) => o.setName('festa').setDescription('Qual').setRequired(true).addChoices(...cfg.temas.lista.slice(0, 25).map((t) => ({ name: t.nome.slice(0, 100), value: t.id })))))
+      .toJSON(),
+    new SlashCommandBuilder()
+      .setName('privacidade')
+      .setDescription('Seus dados no Manda Chuva')
+      .addSubcommand((s) => s.setName('ver').setDescription('Mostra o que o bot guarda de você'))
+      .addSubcommand((s) => s.setName('apagar').setDescription('Apaga seu aniversário, perfil e medalhas'))
       .toJSON(),
   ];
 }
@@ -1124,6 +1147,31 @@ async function prepararTickets(guild, cfg, rel) {
       rel.push(`⚠️ Não consegui criar a categoria dos tickets: ${explicarErro(erro)}`);
     }
   }
+  // Canais novos ficam dentro da categoria dos tickets (com permissão própria, não herdam a dela)
+  const parent = t.categoriaId && guild.channels.cache.get(t.categoriaId)?.type === ChannelType.GuildCategory ? t.categoriaId : undefined;
+  const staff = t.staffId && guild.roles.cache.has(t.staffId) ? [t.staffId] : [];
+  const criar = async (campo, nome, permissionOverwrites, texto) => {
+    if (t[campo] !== 'novo') return;
+    try {
+      const canal = await guild.channels.create({ name: nome, type: ChannelType.GuildText, parent, permissionOverwrites });
+      t[campo] = canal.id;
+      rel.push(`Criei o canal #${canal.name} ${texto}.`);
+    } catch (erro) {
+      t[campo] = null;
+      rel.push(`⚠️ Não consegui criar o #${nome}: ${explicarErro(erro)}`);
+    }
+  };
+  // Canal do menu: todo mundo vê, só o bot escreve
+  await criar('canalId', 'abrir-ticket', [
+    { id: guild.id, allow: [P.ViewChannel, P.ReadMessageHistory], deny: [P.SendMessages] },
+    { id: client.user.id, allow: [...PERMS_TICKET, P.ManageMessages] },
+  ], 'pro menu dos tickets');
+  // Transcrições: só a staff e o bot
+  await criar('logsId', 'registros-tickets', [
+    { id: guild.id, deny: [P.ViewChannel] },
+    ...staff.map((id) => ({ id, allow: [P.ViewChannel, P.ReadMessageHistory], deny: [P.SendMessages] })),
+    { id: client.user.id, allow: PERMS_TICKET },
+  ], 'pras transcrições (só a staff vê)');
 }
 
 async function publicarPainelTickets(guild, rel, cfg = dados.config()) {
@@ -1313,7 +1361,7 @@ async function responderTicket(i) {
       const canal = await naFilaComErro(`tickets:${i.guildId}`, () => abrirTicket(i.guild, i.member, indice));
       return void (await responder(`Pronto! Seu ticket: ${canal}`));
     }
-    if (sub === 'config') return void (await responder(`As configurações dos tickets ficam no painel: ${URL_SITE}`));
+    if (sub === 'config') return void (await responder(`As configurações dos tickets ficam no painel (aba Tickets): ${URL_SITE}painel.html`));
     if (sub === 'painel') {
       if (!i.memberPermissions.has(P.ManageGuild)) throw comStatus(403, 'Só quem pode gerenciar o servidor manda o painel.');
       await i.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1472,6 +1520,102 @@ async function salvarAntesDeSair() {
   await dados.esperarGravacao();
 }
 
+// ---------- /perfil, /medalhas, /painel, /tema simular e /privacidade ----------
+const efemero = (conteudo) => ({ ...conteudo, flags: (conteudo.flags ?? 0) | MessageFlags.Ephemeral });
+const linhaDeStats = (m) => {
+  const s = lerEstatisticas().pessoas[m.id];
+  return `💬 ${(s?.m ?? 0).toLocaleString('pt-BR')} mensagens · 🎧 ${Math.floor(tempoDeCall(m.id).total / 3600)} h em call · entrou <t:${Math.floor((m.joinedTimestamp ?? Date.now()) / 1000)}:R>`;
+};
+
+/** /perfil [membro]: o cartão do site no Discord (banner, foto, cargos, bio, medalhas fixadas e números) */
+async function responderPerfil(i) {
+  const alvo = i.options.getUser('membro') ?? i.user;
+  const m = await i.guild.members.fetch(alvo.id).catch(() => null);
+  if (!m) return void (await i.reply(efemero({ content: 'Essa pessoa não está no servidor.' })));
+  if (m.user.bot) return void (await i.reply(efemero({ content: 'Bot não tem carteirinha (nem eu, infelizmente).' })));
+  const p = perfilDe(m.id);
+  const medalhas = medalhasDoMembro(m);
+  const ganhas = medalhas.filter((x) => x.ganha);
+  const fixadas = p.fixadas.map((id) => ganhas.find((x) => x.id === id)).filter(Boolean);
+  const cargos = cargosVisiveis(m, 3).map((c) => c.nome).join(' · ');
+  const texto = [
+    cargos && `-# ${cargos}`,
+    p.bio && `> ${p.bio}`,
+    `🏅 **${ganhas.length} de ${medalhas.length} medalhas**${fixadas.length ? `: ${fixadas.map((x) => x.nome).join(', ')}` : ''}`,
+    linhaDeStats(m),
+  ].filter(Boolean).join('\n');
+  const cor = m.roles.highest?.colors.primaryColor || 0xf2c14e;
+  await i.reply(montarV2({
+    topo: midia(p.banner).url,
+    cor,
+    titulo: m.displayName,
+    texto,
+    mini: m.displayAvatarURL({ size: 256, extension: 'png' }),
+    rodape: `Perfil completo no site: ${URL_SITE}painel.html`,
+  }));
+}
+
+/** /medalhas: todas, com o que falta (só pra você) */
+async function responderMedalhas(i) {
+  const m = i.member;
+  const linhas = medalhasDoMembro(m).map((x) => {
+    if (x.ganha) return `✅ **${x.nome}** · ${x.desc}`;
+    if (x.rar === 'SECRETA') return '❔ **Medalha secreta** · ninguém conta como ganha';
+    const falta = x.max > 1 ? ` (${x.v}/${x.max}${x.un ? ` ${x.un}` : ''})` : '';
+    return `⬜ **${x.nome}** · ${x.desc}${falta}${x.origem === 'evento' ? ' · a staff dá depois do evento' : ''}`;
+  });
+  const ganhas = linhas.filter((l) => l.startsWith('✅')).length;
+  await i.reply(efemero(montarV2({ cor: 0xf2c14e, titulo: `🏅 Suas medalhas: ${ganhas} de ${linhas.length}`, texto: linhas.join('\n'), rodape: `Fixe até 3 no seu perfil: ${URL_SITE}painel.html` })));
+}
+
+/** /tema simular: como o painel de cores fica numa data festiva (só pra quem pediu) */
+async function responderTema(i) {
+  if (!ehStaffTicket(i.member)) return void (await i.reply(efemero({ content: 'Só a staff simula tema.' })));
+  const cfg = dados.config();
+  const tema = cfg.temas.lista.find((t) => t.id === i.options.getString('festa', true));
+  if (!tema) return void (await i.reply(efemero({ content: 'Esse tema não existe mais.' })));
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const msg = await montarMensagem(i.guild, cfg, tema);
+  await i.editReply({ ...msg, flags: MessageFlags.IsComponentsV2 });
+  await i.followUp(efemero({ content: `Isso é só uma prévia de **${tema.nome}**: nada mudou no servidor.` }));
+}
+
+/** /privacidade ver | apagar: o que o bot guarda da pessoa e o botão pra apagar */
+async function responderPrivacidade(i) {
+  const id = i.user.id;
+  const niver = lerAniversarios().find((p) => p.userId === id);
+  const perfil = lerPerfis()[id];
+  const s = lerEstatisticas().pessoas[id];
+  const avisos = lerAvisos().filter((a) => a.userId === id).length;
+  const lista = [
+    `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
+    `🪪 Perfil do site: ${perfil ? `banner, bio${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
+    `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
+    `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
+  ].join('\n');
+  if (i.options.getSubcommand() === 'ver') {
+    return void (await i.reply(efemero(montarV2({ cor: 0x1f2a5c, titulo: '🔒 O que o Manda Chuva guarda de você', texto: lista, rodape: `Política de Privacidade: ${URL_SITE}central.html#privacidade` }))));
+  }
+  await i.reply(efemero(montarV2({
+    cor: 0xc4363c,
+    titulo: 'Apagar seus dados?',
+    texto: `${lista}\n\nVai apagar aniversário, perfil e contadores das medalhas. Não tem volta.`,
+    linhas: [{ type: 1, components: [{ type: 2, style: 4, custom_id: `priv:apagar:${id}`, label: 'Apagar tudo', emoji: { name: '🗑️' } }] }],
+  })));
+}
+
+/** Botão "Apagar tudo" do /privacidade apagar */
+async function apagarMeusDados(i) {
+  const id = i.customId.split(':')[2];
+  if (id !== i.user.id) return void (await i.reply(efemero({ content: 'Esse botão não é seu.' })));
+  await i.deferUpdate();
+  await tirarAniversario(id);
+  await apagarPerfil(id);
+  apagarEstatisticas(id);
+  await gravarEstatisticas();
+  await i.editReply(montarV2({ cor: 0x2f8f5b, titulo: '🗑️ Pronto, apagado', texto: 'Seu aniversário, perfil e contadores das medalhas sumiram. Se continuar no servidor, os contadores recomeçam do zero.' }));
+}
+
 /** Fila do painel: abertos, do mais novo pro mais velho */
 function filaDeTickets(guild) {
   return lerTickets()
@@ -1489,7 +1633,7 @@ async function donoDoBot() {
 
 // A API (api.js) só conversa com o bot por aqui
 export const api = {
-  saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE }),
+  saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE, convite: client.isReady() ? linkConvite() : null }),
   clientId: () => client.application?.id ?? client.user?.id ?? null,
   papelDe,
 
