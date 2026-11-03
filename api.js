@@ -91,7 +91,13 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
       }
       if (req.method === 'GET' && url.pathname === '/auth/callback') {
         const e = lerEstado(url.searchParams.get('state'));
-        if (!e || !voltaPermitida(e.volta, origens)) return responder(res, 400, { erro: 'O login demorou demais. Volte pro site e tente de novo.' });
+        // Aberto direto (sem o state do botão) ou depois de 10 min: página com o caminho de volta, não um JSON cru
+        if (!e || !voltaPermitida(e.volta, origens)) {
+          const texto = url.searchParams.has('state')
+            ? 'Esse login demorou demais (o link vale 10 minutos).'
+            : 'Esta página é só a volta do login do Discord: ela não abre sozinha.';
+          return paginaDeVolta(res, texto);
+        }
         if (url.searchParams.get('error') || !url.searchParams.get('code')) return redirecionar(res, `${e.volta}#erro=cancelado`);
         try {
           const u = await trocarCodigo({ code: url.searchParams.get('code'), clientId: clientId(), segredo: segredo(), redirect: retorno(req) });
@@ -152,6 +158,18 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
 function retorno(req) {
   const base = process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || `http://${req.headers.host}`;
   return new URL('/auth/callback', base).href;
+}
+
+/** Página simples (no visual do painel) com o botão pra voltar e entrar de novo */
+function paginaDeVolta(res, texto) {
+  const painel = process.env.URL_PAINEL_PAGINA || 'https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html';
+  res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Manda Chuva · login</title>
+<body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#1f2a5c;font:500 16px/1.5 system-ui,sans-serif;color:#1b1f33">
+<div style="max-width:420px;margin:20px;padding:28px;background:#fffcf4;border:3px solid #1b1f33;border-radius:18px;box-shadow:8px 8px 0 #0e1430;display:grid;gap:14px">
+<b style="font-size:22px">Quase lá!</b><span>${texto} Volte pro painel e clique em <b>Entrar com Discord</b>.</span>
+<a href="${painel}" style="padding:12px;text-align:center;background:#5865f2;color:#fff;border:2px solid #1b1f33;border-radius:12px;font-weight:800;text-decoration:none">Voltar pro painel</a>
+</div></body></html>`);
 }
 
 function redirecionar(res, para) {

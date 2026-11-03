@@ -89,4 +89,9 @@ test('login com Discord desligado volta pro site com o aviso; volta não liberad
   assert.equal(r.status, 302);
   assert.equal(r.headers.get('location'), 'https://site.exemplo/painel/#erro=login-desligado');
   assert.equal((await fetch(`${base}/auth/entrar?volta=https://golpe.com/`, { redirect: 'manual' })).status, 400);
+  // Volta do Discord aberta direto (sem o state): página com o caminho de volta, não JSON
+  const direto = await fetch(`${base}/auth/callback`, { redirect: 'manual' });
+  assert.equal(direto.status, 400);
+  assert.match(direto.headers.get('content-type'), /text\/html/);
+  assert.match(await direto.text(), /Entrar com Discord/);
 });
