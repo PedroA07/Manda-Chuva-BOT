@@ -91,7 +91,7 @@ PADRAO.moderacao = {
   palavras: PALAVROES,
 };
 // Tickets (lib/tickets.js): o membro escolhe o motivo no painel e ganha um canal privado com a staff. Desligado até configurarem.
-// categoriaId 'nova' = o bot cria a categoria ao salvar.
+// categoriaId 'nova', canalId 'novo' e logsId 'novo' = o bot cria ao salvar.
 PADRAO.tickets = {
   on: false, categoriaId: null, canalId: null, staffId: null, logsId: null,
   limite: 1, parado: '24h', apagar: '10s', transLog: true, transDm: true, avaliacao: true, mencionar: true,
@@ -361,9 +361,9 @@ const SECOES = {
     return {
       on,
       categoriaId: t.categoriaId === 'nova' ? 'nova' : id(t.categoriaId),
-      canalId: id(t.canalId),
+      canalId: t.canalId === 'novo' ? 'novo' : id(t.canalId),
       staffId: id(t.staffId),
-      logsId: id(t.logsId),
+      logsId: t.logsId === 'novo' ? 'novo' : id(t.logsId),
       limite: [1, 2, 3].includes(t.limite) ? t.limite : p.limite,
       parado: PARADOS.includes(t.parado) ? t.parado : p.parado,
       apagar: APAGARES.includes(t.apagar) ? t.apagar : p.apagar,
