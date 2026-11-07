@@ -104,7 +104,7 @@ Toda versão nova vira notícia no painel e, se você quiser, num canal do servi
 |---|---|---|
 | `/cor` | Escolhe (ou tira) a cor do seu nome | 🟢 todos |
 | `/aniversario dia mes [ano]` | Cadastra seu aniversário (o ano é opcional) | 🟢 todos |
-| `/perfil [@membro]` | Mostra o cartão do perfil com banner e medalhas | 🟢 todos |
+| `/perfil [@membro]` | Mostra a carteirinha em imagem (GIF se o banner ou a foto for animado) | 🟢 todos |
 | `/medalhas` | Lista suas medalhas e o que falta pra cada uma | 🟢 todos |
 | `/painel` | Cartão com os botões pro painel e pra Central | 🟢 todos |
 | `/ticket abrir` · `fechar` | Abre ou fecha um ticket com a staff | 🟢 todos |
@@ -226,7 +226,7 @@ O `render.yaml` já liga o `MANTER_ACORDADO=1`: o bot acessa o próprio endereç
 - **Temas de datas festivas:** em cada data (Natal, Ano Novo, Carnaval, Páscoa...) o bot troca banner, miniatura, cor e põe a frase do tema nas mensagens marcadas em "Usar em". Quando dois temas caem no mesmo dia, ganha o de período menor. Carnaval e Páscoa são calculados todo ano. O dia é contado no horário de Brasília (`FUSO` troca). A cada 30 min o bot confere a data e atualiza os painéis já enviados.
 - Banners "Eventos" da galeria: o bot desenha a placa com o nome do seu servidor (rota pública `/placas/<evento>.jpg`).
 - **Tickets (aba Tickets):** o bot põe um menu de motivos no canal escolhido; quem escolhe ganha um canal privado `#ticket-0042-nome` na categoria (ou o bot cria a 🎫 TICKETS), com Assumir, Adicionar membro e Fechar. Ao fechar: transcrição `.html` no canal de logs e na DM, avaliação de 1 a 5 estrelas na DM e o canal some depois do prazo escolhido. Fecha sozinho ticket parado. Comandos `/ticket abrir, fechar, add, remover, assumir, renomear, painel, config`. Precisa de "Gerenciar canais"; sem a Message Content Intent a transcrição sai sem o texto.
-- **Meu perfil e medalhas (site):** cada pessoa escolhe banner (48), bio e até 3 medalhas fixadas. O bot conta mensagens (sem ler o texto), tempo em call, madrugada, trocas de cor e tempo de casa; medalhas de evento a staff dá com `/medalha` ou pela aba Cargos › Membros. Os números ficam em `estatisticas.json` e os perfis em `perfis.json` (Gist).
+- **Meu perfil e medalhas (site):** cada pessoa escolhe banner (do Discord, 48 da galeria, link ou anexo), foto (do Discord, link ou anexo), bio e até 3 medalhas fixadas. Anexo de membro fica no canal escondido `deposito-do-bot` (criado no primeiro envio; precisa de Gerenciar canais), e apagar uma mensagem lá tira a imagem do perfil. O bot conta mensagens (sem ler o texto), tempo em call, madrugada, trocas de cor e tempo de casa; medalhas de evento a staff dá com `/medalha` ou pela aba Cargos › Membros. Os números ficam em `estatisticas.json` e os perfis em `perfis.json` (Gist).
 - **Comandos de todo mundo:** `/cor`, `/aniversario`, `/aniversario-apagar`, `/perfil [@membro]`, `/medalhas`, `/painel`, `/ticket abrir|fechar` e `/privacidade ver|apagar` (apaga aniversário, perfil e contadores). Da staff: `/ticket add|remover|assumir|renomear`, `/medalha` e `/tema simular`. A lista com quem pode usar cada um fica na Central do Bot (`central.html` no site).
 - **Jornal do Campus:** a cada versão nova, o bot posta a notícia no canal escolhido na aba Notícias do painel (desligado até você escolher o canal). Na primeira vez ele posta só a mais recente. Pra mencionar @everyone, o cargo do bot precisa da permissão "Mencionar @everyone".
 - `#000000` no Discord é "sem cor". Pra preto use `#010101`.

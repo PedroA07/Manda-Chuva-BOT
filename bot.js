@@ -17,15 +17,17 @@ import {
   TextInputStyle,
 } from 'discord.js';
 import * as dados from './dados.js';
-import { lerAnexo, limparAnexos, refsDeAnexo, salvarAnexo } from './lib/anexos.js';
+import { extDoAnexo, lerAnexo, limparAnexos, podeEnviar, refsDeAnexo, salvarAnexo, usarDeposito } from './lib/anexos.js';
 import { contarSpam, NATIVAS, NOMES, oqueDoAutomod, regraDoDiscord } from './lib/automod.js';
 import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
+import { desenharCarteirinha, nomeDoArquivo, tempoDeCasa } from './lib/carteirinha.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
 import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
 import { midia, PADROES } from './lib/imagens.js';
+import { lerLink } from './lib/link.js';
 import { anotar, ativos, consequencia, darAviso, filtrarMembros, lerAvisos, lerOcorrencias, linhaDoRegistro, marcarDesfeita, pagina, semPrazo, SILENCIOS, TIPOS, tirarAviso } from './lib/moderacao.js';
 import { montarV2 } from './lib/mensagem.js';
 import { paraAnunciar, pedacoDaNoticia } from './lib/noticias.js';
@@ -36,7 +38,7 @@ import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, visualDoPerfil } from './lib/perfil.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -314,7 +316,7 @@ export function comandos(cfg = dados.config()) {
       .addStringOption((o) => o.setName('medalha').setDescription('Qual medalha').setRequired(true).addChoices(...MEDALHAS.filter((m) => DE_EVENTO.includes(m.id)).map((m) => ({ name: m.nome, value: m.id }))))
       .addIntegerOption((o) => o.setName('quantidade').setDescription('Quantas vezes (negativo tira; padrão 1)').setMinValue(-10).setMaxValue(10))
       .toJSON(),
-    new SlashCommandBuilder().setName('perfil').setDescription('Mostra o perfil com banner e medalhas').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder().setName('perfil').setDescription('Mostra a carteirinha com banner, foto e medalhas').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
     new SlashCommandBuilder()
       .setName('painel')
@@ -545,11 +547,12 @@ async function voltouSilenciado(membro) {
   await membro.timeout(SILENCIOS.sem[0], 'Voltou com silêncio sem prazo');
 }
 
-/** A cada 6 horas: renova silêncios sem prazo e atualiza as regras do auto-mod (convites novos do servidor) */
+/** A cada 6 horas: renova silêncios sem prazo, atualiza as regras do auto-mod (convites novos do servidor) e tira imagens sem uso */
 async function manutencao() {
   await vestirMascote();
   const guild = servidor();
   if (!guild || soPainel) return;
+  await limparImagens(dados.config());
   await cuidarDosSilencios(guild);
   const rel = [];
   await sincronizarAutomod(guild, dados.config(), rel);
@@ -1465,13 +1468,127 @@ function medalhasDoMembro(m) {
   });
 }
 
-/** Cartão de alguém na lista pública: banner, foto, medalhas fixadas (que ainda valem) e 3 cargos */
-function cartaoDoMembro(m) {
+// ---------- Imagens do perfil ----------
+// Banner e cor de destaque do Discord só vêm pedindo o usuário de novo, então ficam 10 minutos guardados
+const bannersDoDiscord = new Map();
+async function bannerDoDiscord(m) {
+  const g = bannersDoDiscord.get(m.id);
+  if (g && Date.now() - g.quando < 600_000) return g;
+  const u = await client.users.fetch(m.id, { force: true }).catch(() => null);
+  const banner = { url: m.bannerURL({ size: 1024 }) ?? u?.bannerURL({ size: 1024 }) ?? null, cor: u?.hexAccentColor ?? null, quando: Date.now() };
+  bannersDoDiscord.set(m.id, banner);
+  return banner;
+}
+
+const fotoDoDiscord = (m) => m.displayAvatarURL({ size: 256, extension: 'png' });
+
+/** O que o site mostra do perfil dessa pessoa */
+async function visualDe(m, p = perfilDe(m.id)) {
+  const discord = p.bOrig === 'discord' ? await bannerDoDiscord(m) : null;
+  return visualDoPerfil(p, { id: m.id, avatar: fotoDoDiscord(m), discord }, extDoAnexo);
+}
+
+/** Arquivo que a pessoa escolheu por link ou anexo (k = 'b' ou 'a'). null = usar o plano B. */
+async function arquivoDoPerfil(p, k) {
+  if (p[`${k}Orig`] === 'anexo') return (await lerAnexo(p[`${k}Anexo`].slice(6)).catch(() => null))?.buffer ?? null;
+  if (p[`${k}Orig`] === 'link') return (await lerLink(p[`${k}Link`]))?.buffer ?? null;
+  return null;
+}
+
+/** Tudo o que a carteirinha precisa. Link quebrado ou anexo apagado caem no banner da galeria e na foto do Discord. */
+async function dadosDaCarteirinha(m) {
   const p = perfilDe(m.id);
+  const ganhas = medalhasDoMembro(m).filter((x) => x.ganha);
+  const fixadas = p.fixadas.filter((id) => ganhas.some((x) => x.id === id));
+  const discord = p.bOrig === 'discord' ? await bannerDoDiscord(m) : null;
+  const banner = discord ? await baixarImagem(discord.url) : ((await arquivoDoPerfil(p, 'b')) ?? (await baixarImagem(midia(p.banner).url)));
+  const avatar = (await arquivoDoPerfil(p, 'a')) ?? (await baixarImagem(fotoDoDiscord(m)));
+  const medalhas = await Promise.all(fixadas.map((id) => baixarImagem(midia(`banners/medalhas/${id}.png`).url)));
+  const s = lerEstatisticas().pessoas[m.id];
+  return {
+    banner, cor: discord?.cor ?? null, avatar,
+    nome: m.displayName, usuario: m.user.username, entrou: tempoDeCasa(m.joinedTimestamp),
+    medalhas: medalhas.filter(Boolean),
+    cargos: cargosVisiveis(m),
+    stats: [[(s?.m ?? 0).toLocaleString('pt-BR'), 'mensagens'], [`${Math.floor(tempoDeCall(m.id).total / 3600).toLocaleString('pt-BR')} h`, 'em call'], [String(ganhas.length), 'medalhas']],
+    rodape: `${m.guild.name.toUpperCase()} · CARTEIRINHA`,
+  };
+}
+
+// Depósito: anexo de membro fica como mensagem num canal escondido do servidor, não no Gist (lib/anexos.js explica por quê).
+// A staff enxerga o canal: apagar uma mensagem lá tira a imagem do perfil de quem mandou.
+const NOME_DEPOSITO = 'deposito-do-bot';
+let criandoDeposito = null;
+/** Erro do Discord não vai pra tela do membro: fica no log, e ele recebe um aviso que dá pra entender */
+function naoGuardou(erro) {
+  console.error('Depósito de imagens:', erro.message);
+  throw comStatus(503, 'Não consegui guardar a imagem no Discord agora. Tenta de novo daqui a pouco, ou usa um link.');
+}
+
+async function canalDoDeposito() {
+  const guild = servidor();
+  if (!guild) throw comStatus(503, 'O bot está dormindo. Tente de novo em 1 minuto.');
+  const canal = guild.channels.cache.find((c) => c.name === NOME_DEPOSITO && c.type === ChannelType.GuildText);
+  if (canal) return canal;
+  if (!guild.members.me?.permissions.has(P.ManageChannels)) {
+    throw comStatus(503, 'Por enquanto não dá pra anexar: falta o bot ter a permissão Gerenciar canais. Usa um link, ou pede pra staff liberar.');
+  }
+  const staff = dados.config().tickets.staffId;
+  criandoDeposito ??= guild.channels
+    .create({
+      name: NOME_DEPOSITO,
+      type: ChannelType.GuildText,
+      topic: 'Imagens que os membros mandaram pro perfil. Apagar uma mensagem aqui tira a imagem do perfil de quem mandou.',
+      permissionOverwrites: [
+        { id: guild.id, deny: [P.ViewChannel] },
+        { id: client.user.id, allow: [P.ViewChannel, P.SendMessages, P.AttachFiles, P.ReadMessageHistory, P.ManageMessages] },
+        ...(staff && guild.roles.cache.has(staff) ? [{ id: staff, allow: [P.ViewChannel, P.ReadMessageHistory, P.ManageMessages] }] : []),
+      ],
+    })
+    .catch(naoGuardou)
+    .finally(() => (criandoDeposito = null));
+  return criandoDeposito;
+}
+
+usarDeposito({
+  async guardar(buffer, nome, legenda) {
+    const canal = await canalDoDeposito();
+    const msg = await canal.send({ content: legenda, files: [{ attachment: buffer, name: nome }], allowedMentions: { parse: [] } }).catch(naoGuardou);
+    return { canal: canal.id, msg: msg.id };
+  },
+  // O link do arquivo vence depois de um tempo: pega um novo na mensagem a cada leitura
+  async ler({ canal, msg }) {
+    const c = await client.channels.fetch(canal).catch(() => null);
+    const url = (await c?.messages.fetch(msg).catch(() => null))?.attachments.first()?.url;
+    if (!url) return null;
+    const r = await fetch(url, { signal: AbortSignal.timeout(20_000) });
+    return r.ok ? Buffer.from(await r.arrayBuffer()) : null;
+  },
+  async apagar({ canal, msg }) {
+    const c = await client.channels.fetch(canal).catch(() => null);
+    await c?.messages.delete(msg).catch((erro) => {
+      if (erro.code !== 10008) throw erro; // 10008 = a mensagem já não existe
+    });
+  },
+});
+
+/** Conta um envio de imagem da pessoa, ou recusa se ela passou do limite */
+function limitarEnvios(userId) {
+  if (!podeEnviar(userId)) throw comStatus(429, 'Calma aí: dá pra trocar de imagem até 5 vezes a cada 10 minutos.');
+}
+
+/** Apaga as imagens que nem a config nem os perfis usam mais. Falhar aqui não atrapalha quem chamou. */
+const limparImagens = (config, opcoes) =>
+  limparAnexos({ config, perfis: lerPerfis() }, opcoes).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
+
+/** Cartão de alguém na lista pública: banner, foto, medalhas fixadas (que ainda valem) e 3 cargos */
+async function cartaoDoMembro(m) {
+  const p = perfilDe(m.id);
+  const v = await visualDe(m, p);
   const ganhas = new Set(medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id));
   return {
-    id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp,
-    banner: p.banner, bio: p.bio, medalhas: p.fixadas.filter((id) => ganhas.has(id)), cargos: cargosVisiveis(m, 3),
+    id: m.id, nome: m.displayName, usuario: m.user.username, avatar: v.avatar, entrou: m.joinedTimestamp,
+    banner: v.banner, cor: v.cor, bio: p.bio, medalhas: p.fixadas.filter((id) => ganhas.has(id)), cargos: cargosVisiveis(m, 3),
   };
 }
 
@@ -1531,32 +1648,38 @@ const linhaDeStats = (m) => {
   return `💬 ${(s?.m ?? 0).toLocaleString('pt-BR')} mensagens · 🎧 ${Math.floor(tempoDeCall(m.id).total / 3600)} h em call · entrou <t:${Math.floor((m.joinedTimestamp ?? Date.now()) / 1000)}:R>`;
 };
 
-/** /perfil [membro]: o cartão do site no Discord (banner, foto, cargos, bio, medalhas fixadas e números) */
-async function responderPerfil(i) {
-  const alvo = i.options.getUser('membro') ?? i.user;
-  const m = await i.guild.members.fetch(alvo.id).catch(() => null);
-  if (!m) return void (await i.reply(efemero({ content: 'Essa pessoa não está no servidor.' })));
-  if (m.user.bot) return void (await i.reply(efemero({ content: 'Bot não tem carteirinha (nem eu, infelizmente).' })));
+/** Plano B do /perfil: se a imagem não sair, a pessoa ainda recebe os dados em texto */
+function perfilEmTexto(m) {
   const p = perfilDe(m.id);
   const medalhas = medalhasDoMembro(m);
   const ganhas = medalhas.filter((x) => x.ganha);
   const fixadas = p.fixadas.map((id) => ganhas.find((x) => x.id === id)).filter(Boolean);
   const cargos = cargosVisiveis(m, 3).map((c) => c.nome).join(' · ');
-  const texto = [
+  return [
+    `**${m.displayName}**`,
     cargos && `-# ${cargos}`,
     p.bio && `> ${p.bio}`,
     `🏅 **${ganhas.length} de ${medalhas.length} medalhas**${fixadas.length ? `: ${fixadas.map((x) => x.nome).join(', ')}` : ''}`,
     linhaDeStats(m),
+    `-# Perfil completo no site: ${URL_SITE}painel.html`,
   ].filter(Boolean).join('\n');
-  const cor = m.roles.highest?.colors.primaryColor || 0xf2c14e;
-  await i.reply(montarV2({
-    topo: midia(p.banner).url,
-    cor,
-    titulo: m.displayName,
-    texto,
-    mini: m.displayAvatarURL({ size: 256, extension: 'png' }),
-    rodape: `Perfil completo no site: ${URL_SITE}painel.html`,
-  }));
+}
+
+/** /perfil [membro]: a carteirinha desenhada, como imagem anexada (GIF se o banner ou a foto for animado) */
+export async function responderPerfil(i) {
+  const alvo = i.options.getUser('membro') ?? i.user;
+  const m = await i.guild.members.fetch(alvo.id).catch(() => null);
+  if (!m) return void (await i.reply(efemero({ content: 'Essa pessoa não está no servidor.' })));
+  if (m.user.bot) return void (await i.reply(efemero({ content: 'Bot não tem carteirinha (nem eu, infelizmente).' })));
+  await i.deferReply(); // GIF pode levar bem mais que os 3 segundos que o Discord espera
+  try {
+    const desenho = await desenharCarteirinha(await dadosDaCarteirinha(m));
+    if (!desenho) throw new Error('o canvas não carregou');
+    await i.editReply({ files: [{ attachment: desenho.buffer, name: nomeDoArquivo(m.displayName, desenho.ext) }] });
+  } catch (erro) {
+    console.error('Carteirinha:', erro.message);
+    await i.editReply({ content: perfilEmTexto(m), allowedMentions: { parse: [] } });
+  }
 }
 
 /** /medalhas: todas, com o que falta (só pra você) */
@@ -1608,7 +1731,7 @@ async function responderPrivacidade(i) {
   const avisos = lerAvisos().filter((a) => a.userId === id).length;
   const lista = [
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
-    `🪪 Perfil do site: ${perfil ? `banner, bio${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
+    `🪪 Perfil do site: ${perfil ? `banner, foto, bio${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
   ].join('\n');
@@ -1618,21 +1741,23 @@ async function responderPrivacidade(i) {
   await i.reply(efemero(montarV2({
     cor: 0xc4363c,
     titulo: 'Apagar seus dados?',
-    texto: `${lista}\n\nVai apagar aniversário, perfil e contadores das medalhas. Não tem volta.`,
+    texto: `${lista}\n\nVai apagar aniversário, perfil (com as imagens que você enviou) e contadores das medalhas. Não tem volta.`,
     linhas: [{ type: 1, components: [{ type: 2, style: 4, custom_id: `priv:apagar:${id}`, label: 'Apagar tudo', emoji: { name: '🗑️' } }] }],
   })));
 }
 
 /** Botão "Apagar tudo" do /privacidade apagar */
-async function apagarMeusDados(i) {
+export async function apagarMeusDados(i) {
   const id = i.customId.split(':')[2];
   if (id !== i.user.id) return void (await i.reply(efemero({ content: 'Esse botão não é seu.' })));
   await i.deferUpdate();
   await tirarAniversario(id);
+  const imagens = refsDeAnexo(lerPerfis()[id]);
   await apagarPerfil(id);
+  await limparImagens(dados.config(), { imediatos: imagens });
   apagarEstatisticas(id);
   await gravarEstatisticas();
-  await i.editReply(montarV2({ cor: 0x2f8f5b, titulo: '🗑️ Pronto, apagado', texto: 'Seu aniversário, perfil e contadores das medalhas sumiram. Se continuar no servidor, os contadores recomeçam do zero.' }));
+  await i.editReply(montarV2({ cor: 0x2f8f5b, titulo: '🗑️ Pronto, apagado', texto: 'Seu aniversário, perfil, imagens enviadas e contadores das medalhas sumiram. Se continuar no servidor, os contadores recomeçam do zero.' }));
 }
 
 /** Fila do painel: abertos, do mais novo pro mais velho */
@@ -1670,6 +1795,7 @@ export const api = {
       papelTxt: quem.papel === 'admin' ? 'Staff · Reitoria' : quem.papel === 'staff' ? `Staff · ${staffNome ?? 'Staff'}` : 'Membro',
       usuario: { id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp, cargos: cargosVisiveis(m) },
       perfil: perfilDe(m.id),
+      visual: await visualDe(m),
       medalhas,
       stats: { mensagens: s?.m ?? 0, horas: Math.floor(tempoDeCall(m.id).total / 3600), medalhas: medalhas.filter((x) => x.ganha).length },
     };
@@ -1679,9 +1805,38 @@ export const api = {
     if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
     const m = await servidor()?.members.fetch(quem.id).catch(() => null);
     if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
-    const r = await salvarPerfil(m.id, corpo, medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id));
+    // Link novo: o bot baixa pra conferir, então conta no mesmo limite dos anexos
+    const provas = {
+      async link(link) {
+        limitarEnvios(m.id);
+        const imagem = await lerLink(link);
+        return imagem && { gif: imagem.tipo === 'image/gif' };
+      },
+    };
+    const r = await salvarPerfil(m.id, corpo, medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id), provas);
     if (r.erro) throw comStatus(400, r.erro);
-    return { ok: true, perfil: r.perfil };
+    return { ok: true, perfil: r.perfil, visual: await visualDe(m, r.perfil) };
+  },
+
+  // Antes de ler o corpo da imagem: quem passou do limite nem chega a mandar os 8 MB pra memória do bot
+  podeEnviarAnexo: (quem) => quem.tipo === 'discord' && limitarEnvios(quem.id),
+
+  // Banner ou foto enviada em Meu perfil: guarda no depósito e já passa a usar
+  async anexoDoPerfil(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const m = await servidor()?.members.fetch(quem.id).catch(() => null);
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    const alvo = corpo?.alvo === 'foto' ? 'foto' : 'banner';
+    const { ref } = await salvarAnexo(corpo, { noDeposito: true, legenda: `${alvo === 'foto' ? 'Foto' : 'Banner'} de <@${m.id}>` });
+    const r = await definirAnexo(m.id, alvo, ref, corpo?.nome);
+    if (r.erro) throw comStatus(500, r.erro);
+    return { ok: true, perfil: r.perfil, visual: await visualDe(m, r.perfil) };
+  },
+
+  // Imagem de link que o site mostra pelo bot (só o link salvo no perfil, nunca um endereço que venha no pedido)
+  async imagemDoPerfil(id, tipo) {
+    const link = lerPerfis()[id]?.[tipo === 'foto' ? 'aLink' : 'bLink'];
+    return link ? lerLink(link) : null;
   },
 
   // O que membro (sem ser staff) vê: o bot, o nome do servidor e o jornal
@@ -1708,7 +1863,7 @@ export const api = {
       .filter((m) => !q || m.displayName.toLowerCase().includes(q) || m.user.username.toLowerCase().includes(q))
       .sort((a, b) => a.displayName.localeCompare(b.displayName, 'pt-BR'));
     const p = pagina(lista, params.get('pagina'), 9);
-    return { ...p, itens: p.itens.map(cartaoDoMembro), completa: temMembros() };
+    return { ...p, itens: await Promise.all(p.itens.map(cartaoDoMembro)), completa: temMembros() };
   },
 
   // Medalha de evento pelo painel (a mesma conta do /medalha)
@@ -1777,7 +1932,7 @@ export const api = {
     const postadas = guild ? await anunciarNovidades() : [];
     if (postadas.length) rel.push(`Jornal do Campus: ${postadas.map((v) => `v${v}`).join(', ')} anunciada(s) no Discord.`);
     await avisarSeNaoGravou(rel);
-    limparAnexos(cfg).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
+    limparImagens(cfg);
     return { config: cfg, relatorio: rel };
   },
 

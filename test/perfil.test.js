@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { contarCor, contarMensagem, de, entrouNaCall, fecharCalls, fecharMes, lerEstatisticas, mesDe, saiuDaCall, somarEvento, tempoDeCall, zerarEstatisticas } from '../lib/estatisticas.js';
-import { bannerPadrao, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, zerarPerfis } from '../lib/perfil.js';
+import { bannerPadrao, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, visualDoPerfil, zerarPerfis } from '../lib/perfil.js';
 import { abrir, criarEstado, criarSessao, lerEstado, lerSessao, linkDoDiscord, selar, voltaPermitida } from '../lib/sessao.js';
 
 const ID = '123456789012345678';
@@ -55,7 +55,9 @@ test('perfil: banner da galeria, bio até 120 e só medalha ganha fixa (até 3)'
   assert.equal(bannerPadrao(ID), bannerPadrao(ID));
   assert.deepEqual(perfilDe(ID).fixadas, []);
   const ok = await salvarPerfil(ID, { banner: 'banners/perfil/animais-3.jpg', bio: '  Main  suporte  ', fixadas: ['calouro', 'calouro'] }, ['calouro']);
-  assert.deepEqual(ok.perfil, { banner: 'banners/perfil/animais-3.jpg', bio: 'Main suporte', fixadas: ['calouro'] });
+  assert.equal(ok.perfil.banner, 'banners/perfil/animais-3.jpg');
+  assert.equal(ok.perfil.bio, 'Main suporte');
+  assert.deepEqual(ok.perfil.fixadas, ['calouro']);
   assert.equal(perfilDe(ID).banner, 'banners/perfil/animais-3.jpg');
   assert.match((await salvarPerfil(ID, { banner: 'https://x/y.jpg' }, [])).erro, /galeria/);
   assert.match((await salvarPerfil(ID, { bio: 'x'.repeat(121) }, [])).erro, /120/);
@@ -63,6 +65,180 @@ test('perfil: banner da galeria, bio até 120 e só medalha ganha fixa (até 3)'
   assert.match((await salvarPerfil(ID, { fixadas: ['a', 'b', 'c', 'd'] }, ['a', 'b', 'c', 'd'])).erro, /até 3/);
   // Só a bio muda: o resto fica
   assert.equal((await salvarPerfil(ID, { bio: 'oi' }, ['calouro'])).perfil.banner, 'banners/perfil/animais-3.jpg');
+});
+
+const LINK = 'https://i.imgur.com/banner.gif';
+const linkBom = { link: async (l) => ({ gif: l.endsWith('.gif') }) };
+
+test('perfil de antes da v10 continua igual: banner da galeria e foto do Discord', () => {
+  zerarPerfis();
+  lerPerfis()[ID] = { banner: 'banners/perfil/jogos-2.jpg', bio: 'oi', fixadas: ['calouro'] };
+  const p = perfilDe(ID);
+  assert.equal(p.bOrig, 'galeria');
+  assert.equal(p.aOrig, 'discord');
+  assert.equal(p.banner, 'banners/perfil/jogos-2.jpg');
+  assert.equal(p.bio, 'oi');
+  assert.deepEqual(p.fixadas, ['calouro']);
+});
+
+test('quem nunca mexeu começa na galeria e com a foto do Discord', () => {
+  zerarPerfis();
+  const p = perfilDe(ID);
+  assert.equal(p.bOrig, 'galeria');
+  assert.equal(p.aOrig, 'discord');
+  assert.equal(p.bLink, '');
+  assert.equal(p.aAnexo, '');
+});
+
+test('banner por link: guarda o link, diz se é GIF e muda a origem', async () => {
+  zerarPerfis();
+  const r = await salvarPerfil(ID, { bOrig: 'link', bLink: `  ${LINK}  ` }, [], linkBom);
+  assert.equal(r.perfil.bOrig, 'link');
+  assert.equal(r.perfil.bLink, LINK);
+  assert.equal(r.perfil.bLinkGif, true);
+  assert.equal(perfilDe(ID).bLink, LINK);
+});
+
+test('foto por link: não mexe no banner', async () => {
+  zerarPerfis();
+  const antes = perfilDe(ID).banner;
+  const r = await salvarPerfil(ID, { aOrig: 'link', aLink: 'https://i.imgur.com/foto.png' }, [], linkBom);
+  assert.equal(r.perfil.aOrig, 'link');
+  assert.equal(r.perfil.aLink, 'https://i.imgur.com/foto.png');
+  assert.equal(r.perfil.aLinkGif, false);
+  assert.equal(r.perfil.bOrig, 'galeria');
+  assert.equal(r.perfil.banner, antes);
+});
+
+test('banner do Discord e volta pra galeria: o link fica guardado', async () => {
+  zerarPerfis();
+  await salvarPerfil(ID, { bOrig: 'link', bLink: LINK }, [], linkBom);
+  assert.equal((await salvarPerfil(ID, { bOrig: 'discord' }, [])).perfil.bOrig, 'discord');
+  const r = await salvarPerfil(ID, { bOrig: 'galeria', banner: 'banners/perfil/codigo-1.jpg' }, []);
+  assert.equal(r.perfil.bOrig, 'galeria');
+  assert.equal(r.perfil.banner, 'banners/perfil/codigo-1.jpg');
+  assert.equal(r.perfil.bLink, LINK);
+});
+
+test('voltar pro link já salvo não baixa de novo', async () => {
+  zerarPerfis();
+  let baixou = 0;
+  const contando = { link: async () => (baixou++, { gif: false }) };
+  await salvarPerfil(ID, { bOrig: 'link', bLink: LINK }, [], contando);
+  await salvarPerfil(ID, { bOrig: 'discord' }, [], contando);
+  await salvarPerfil(ID, { bOrig: 'link', bLink: LINK }, [], contando);
+  assert.equal(baixou, 1);
+});
+
+test('link sem https ou de rede interna nem chega a ser baixado', async () => {
+  zerarPerfis();
+  let baixou = 0;
+  const contando = { link: async () => (baixou++, { gif: false }) };
+  assert.match((await salvarPerfil(ID, { bOrig: 'link', bLink: 'http://site.com/a.png' }, [], contando)).erro, /https:\/\//);
+  assert.match((await salvarPerfil(ID, { bOrig: 'link', bLink: 'https://127.0.0.1/a.png' }, [], contando)).erro, /imagem/);
+  assert.equal(baixou, 0);
+});
+
+test('link que não abre: avisa e o perfil continua como estava', async () => {
+  zerarPerfis();
+  const r = await salvarPerfil(ID, { bOrig: 'link', bLink: LINK }, [], { link: async () => null });
+  assert.match(r.erro, /imagem/);
+  assert.equal(perfilDe(ID).bOrig, 'galeria');
+  assert.equal(perfilDe(ID).bLink, '');
+});
+
+test('não dá pra escolher link ou anexo sem ter um, nem origem inventada', async () => {
+  zerarPerfis();
+  assert.match((await salvarPerfil(ID, { bOrig: 'link' }, [])).erro, /link/);
+  assert.match((await salvarPerfil(ID, { aOrig: 'link' }, [])).erro, /link/);
+  assert.match((await salvarPerfil(ID, { bOrig: 'anexo' }, [])).erro, /[Aa]nexa/);
+  assert.match((await salvarPerfil(ID, { aOrig: 'anexo' }, [])).erro, /[Aa]nexa/);
+  assert.ok((await salvarPerfil(ID, { bOrig: 'ftp' }, [])).erro);
+  assert.ok((await salvarPerfil(ID, { aOrig: 'galeria' }, [])).erro); // foto não tem galeria
+});
+
+test('o site não aponta o perfil pra um anexo qualquer', async () => {
+  zerarPerfis();
+  const r = await salvarPerfil(ID, { bio: 'oi', bAnexo: 'anexo:0123456789abcdef', aAnexo: 'anexo:0123456789abcdef', bArqNome: 'x', bLinkGif: true }, []);
+  assert.equal(r.perfil.bAnexo, '');
+  assert.equal(r.perfil.aAnexo, '');
+  assert.equal(r.perfil.bArqNome, '');
+  assert.equal(r.perfil.bLinkGif, false);
+});
+
+test('definirAnexo grava o arquivo enviado e já troca a origem', async () => {
+  zerarPerfis();
+  const r = await definirAnexo(ID, 'banner', 'anexo:0123456789abcdef', 'meu banner.gif');
+  assert.equal(r.perfil.bOrig, 'anexo');
+  assert.equal(r.perfil.bAnexo, 'anexo:0123456789abcdef');
+  assert.equal(r.perfil.bArqNome, 'meu banner.gif');
+  assert.equal(r.perfil.aOrig, 'discord');
+  const f = await definirAnexo(ID, 'foto', 'anexo:fedcba9876543210', 'x'.repeat(200));
+  assert.equal(f.perfil.aOrig, 'anexo');
+  assert.equal(f.perfil.aAnexo, 'anexo:fedcba9876543210');
+  assert.equal(f.perfil.aArqNome.length, 80);
+  assert.equal(f.perfil.bAnexo, 'anexo:0123456789abcdef');
+  // Depois de enviado, dá pra voltar pro anexo sem mandar de novo
+  await salvarPerfil(ID, { bOrig: 'discord' }, []);
+  assert.equal((await salvarPerfil(ID, { bOrig: 'anexo' }, [])).perfil.bOrig, 'anexo');
+});
+
+test('salvar a bio não mexe na origem das imagens', async () => {
+  zerarPerfis();
+  await salvarPerfil(ID, { bOrig: 'link', bLink: LINK, aOrig: 'link', aLink: LINK }, [], linkBom);
+  const r = await salvarPerfil(ID, { bio: 'nova' }, []);
+  assert.equal(r.perfil.bOrig, 'link');
+  assert.equal(r.perfil.aOrig, 'link');
+  assert.equal(r.perfil.bLink, LINK);
+});
+
+const FOTO_DISCORD = 'https://cdn.discordapp.com/avatars/1/abc.png?size=256';
+const semExt = () => null;
+
+test('visual de quem nunca mexeu: banner da galeria e foto do Discord', () => {
+  zerarPerfis();
+  lerPerfis()[ID] = { banner: 'banners/perfil/jogos-2.jpg' };
+  assert.deepEqual(visualDoPerfil(perfilDe(ID), { id: ID, avatar: FOTO_DISCORD }, semExt), { banner: 'banners/perfil/jogos-2.jpg', cor: null, avatar: FOTO_DISCORD, gif: false });
+});
+
+test('visual com banner do Discord: quem tem banner usa, quem não tem fica com a cor', () => {
+  const p = { bOrig: 'discord', aOrig: 'discord', banner: 'banners/perfil/jogos-2.jpg' };
+  const comBanner = visualDoPerfil(p, { id: ID, avatar: FOTO_DISCORD, discord: { url: 'https://cdn.discordapp.com/banners/1/x.webp', cor: '#112233' } }, semExt);
+  assert.equal(comBanner.banner, 'https://cdn.discordapp.com/banners/1/x.webp');
+  assert.equal(comBanner.cor, null);
+  const semNitro = visualDoPerfil(p, { id: ID, avatar: FOTO_DISCORD, discord: { url: null, cor: '#112233' } }, semExt);
+  assert.equal(semNitro.banner, null);
+  assert.equal(semNitro.cor, '#112233');
+  const semNada = visualDoPerfil(p, { id: ID, avatar: FOTO_DISCORD, discord: { url: null, cor: null } }, semExt);
+  assert.equal(semNada.banner, null);
+  assert.equal(semNada.cor, null);
+});
+
+test('visual com link: o site nunca recebe o endereço de fora', () => {
+  const p = { bOrig: 'link', bLink: LINK, bLinkGif: true, aOrig: 'link', aLink: 'https://i.imgur.com/foto.png', aLinkGif: false };
+  const v = visualDoPerfil(p, { id: ID, avatar: FOTO_DISCORD }, semExt);
+  assert.match(v.banner, new RegExp(`^/perfis/${ID}/banner\\?v=[0-9a-f]{8}$`));
+  assert.match(v.avatar, new RegExp(`^/perfis/${ID}/foto\\?v=[0-9a-f]{8}$`));
+  assert.ok(!JSON.stringify(v).includes('imgur'));
+  assert.equal(v.gif, true);
+  // Trocou o link, muda o endereço (o navegador guarda a imagem por 1 hora)
+  const outro = visualDoPerfil({ ...p, bLink: 'https://i.imgur.com/outro.gif' }, { id: ID, avatar: FOTO_DISCORD }, semExt);
+  assert.notEqual(outro.banner, v.banner);
+});
+
+test('visual com anexo: manda a referência, e o tipo do arquivo diz se é GIF', () => {
+  const ext = (ref) => ({ 'anexo:0123456789abcdef': 'gif', 'anexo:fedcba9876543210': 'png' })[ref];
+  const p = { bOrig: 'anexo', bAnexo: 'anexo:fedcba9876543210', aOrig: 'anexo', aAnexo: 'anexo:0123456789abcdef' };
+  assert.deepEqual(visualDoPerfil(p, { id: ID, avatar: FOTO_DISCORD }, ext), { banner: 'anexo:fedcba9876543210', cor: null, avatar: 'anexo:0123456789abcdef', gif: true });
+  assert.equal(visualDoPerfil({ ...p, aAnexo: 'anexo:fedcba9876543210' }, { id: ID, avatar: FOTO_DISCORD }, ext).gif, false);
+});
+
+test('foto ou banner animado do Discord sai em GIF', () => {
+  const p = { bOrig: 'discord', aOrig: 'discord' };
+  const parado = { id: ID, avatar: FOTO_DISCORD, discord: { url: null, cor: null } };
+  assert.equal(visualDoPerfil(p, parado, semExt).gif, false);
+  assert.equal(visualDoPerfil(p, { ...parado, avatar: 'https://cdn.discordapp.com/avatars/1/a_abc.gif?size=256' }, semExt).gif, true);
+  assert.equal(visualDoPerfil(p, { ...parado, discord: { url: 'https://cdn.discordapp.com/banners/1/a_x.gif?size=1024', cor: null } }, semExt).gif, true);
 });
 
 test('estatísticas: mensagens por mês, coruja, rei do mês, call e eventos', () => {

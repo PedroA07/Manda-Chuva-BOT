@@ -83,6 +83,69 @@ test('níveis: senha é admin; sessão do Discord vale o papel no servidor', asy
   assert.equal((await pedir('/api/eu', 'Sessao lixo')).status, 401);
 });
 
+const MEMBRO = '111111111111111111';
+
+test('membro envia imagem do perfil, com corpo maior que 1 MB', async (t) => {
+  const recebidos = [];
+  const { servidor, base } = await subir({
+    saude: () => ({}),
+    papelDe: async () => 'membro',
+    podeEnviarAnexo: () => {},
+    anexoDoPerfil: async (quem, corpo) => (recebidos.push([quem.id, corpo.alvo, corpo.base64.length]), { ok: true }),
+  }, { senha: 'senha-bem-grande-123' });
+  t.after(() => servidor.close());
+  const base64 = Buffer.alloc(3 * 1024 * 1024).toString('base64');
+  const r = await fetch(`${base}/api/eu/anexo`, {
+    method: 'POST',
+    headers: { 'X-Painel': '1', 'Content-Type': 'application/json', Authorization: `Sessao ${criarSessao({ id: MEMBRO, nome: 'x', usuario: 'x' })}` },
+    body: JSON.stringify({ base64, tipo: 'image/png', alvo: 'foto' }),
+  });
+  assert.equal(r.status, 200);
+  assert.deepEqual(recebidos, [[MEMBRO, 'foto', base64.length]]);
+});
+
+test('passou do limite de envios: nem processa a imagem', async (t) => {
+  let processou = false;
+  const { servidor, base } = await subir({
+    saude: () => ({}),
+    papelDe: async () => 'membro',
+    podeEnviarAnexo: () => {
+      throw Object.assign(new Error('Calma, tenta daqui a pouco.'), { status: 429 });
+    },
+    anexoDoPerfil: async () => (processou = true),
+  }, { senha: 'senha-bem-grande-123' });
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/api/eu/anexo`, {
+    method: 'POST',
+    headers: { 'X-Painel': '1', 'Content-Type': 'application/json', Authorization: `Sessao ${criarSessao({ id: MEMBRO, nome: 'x', usuario: 'x' })}` },
+    body: JSON.stringify({ base64: 'AAAA', tipo: 'image/png' }),
+  });
+  assert.equal(r.status, 429);
+  assert.equal((await r.json()).erro, 'Calma, tenta daqui a pouco.');
+  assert.equal(processou, false);
+});
+
+test('imagem do perfil por link passa pelo bot, sem precisar de login', async (t) => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+  const pedidos = [];
+  const { servidor, base } = await subir({
+    saude: () => ({}),
+    imagemDoPerfil: async (id, tipo) => (pedidos.push([id, tipo]), id === MEMBRO && tipo === 'banner' ? { buffer: png, tipo: 'image/png', ext: 'png' } : null),
+  });
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/perfis/${MEMBRO}/banner?v=abc`);
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get('content-type'), 'image/png');
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.deepEqual(Buffer.from(await r.arrayBuffer()), png);
+  assert.equal((await fetch(`${base}/perfis/${MEMBRO}/foto`)).status, 404);
+  assert.deepEqual(pedidos, [[MEMBRO, 'banner'], [MEMBRO, 'foto']]);
+  // O que não é id de membro ou tipo conhecido nem chega no bot
+  assert.equal((await fetch(`${base}/perfis/abc/banner`)).status, 404);
+  assert.equal((await fetch(`${base}/perfis/${MEMBRO}/outra`)).status, 404);
+  assert.equal(pedidos.length, 2);
+});
+
 test('login com Discord desligado volta pro site com o aviso; volta não liberada é recusada', async (t) => {
   const { servidor, base } = await subir({ saude: () => ({}), clientId: () => '42' }, { origens: ['https://site.exemplo'] });
   t.after(() => servidor.close());

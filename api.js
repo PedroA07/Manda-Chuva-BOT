@@ -17,10 +17,11 @@ const comStatus = (status, mensagem) => Object.assign(new Error(mensagem), { sta
  * origens: sites que podem chamar a API pelo navegador (CORS). Endereços localhost sempre podem.
  */
 export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
-  // [quem pode, ação(corpo, url, quem)]
+  // [quem pode, ação(corpo, url, quem), antes de ler o corpo(quem)]
   const rotas = {
     'GET /api/eu': ['membro', (_, __, quem) => api.eu(quem)],
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
+    'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
     'GET /api/publico': ['membro', () => api.publico()],
     'GET /api/turma': ['membro', (_, url) => api.turma(url.searchParams)],
     'GET /api/estado': ['staff', (_, url) => api.estado(url.searchParams.get('servidor'))],
@@ -37,7 +38,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/tickets/acao': ['staff', (corpo, _, quem) => api.ticketAcao(corpo, quem)],
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
-  const limites = { 'POST /api/anexo': 12_000_000 };
+  const limites = { 'POST /api/anexo': 12_000_000, 'POST /api/eu/anexo': 12_000_000 };
   const permitida = (origem) => ORIGEM_LOCAL.test(origem) || origens.includes(origem);
   const segredo = () => process.env.DISCORD_CLIENT_SECRET ?? '';
   const clientId = () => process.env.DISCORD_CLIENT_ID || api.clientId?.() || null;
@@ -122,6 +123,16 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
         return res.end(a.buffer);
       }
 
+      // Banner e foto de perfil que vêm de link: o site mostra por aqui, e não direto do link, pra quem escolheu a imagem
+      // não conseguir ver o IP de quem abre a lista de membros
+      const doPerfil = req.method === 'GET' && /^\/perfis\/(\d{15,25})\/(banner|foto)$/.exec(url.pathname);
+      if (doPerfil) {
+        const a = await api.imagemDoPerfil?.(doPerfil[1], doPerfil[2]);
+        if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
+        res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+        return res.end(a.buffer);
+      }
+
       // Banners "Eventos" com a placa desenhada pelo bot (nome do servidor de verdade)
       const placa = req.method === 'GET' && /^\/placas\/([a-z]+)\.jpg$/.exec(url.pathname);
       if (placa) {
@@ -138,8 +149,9 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
       // Cabeçalho próprio: um site qualquer aberto no navegador não consegue chamar a API
       if (req.headers['x-painel'] !== '1') return responder(res, 403, { erro: 'Requisição bloqueada.' });
       const quem = await identificar(req);
-      const [precisa, acao] = rota;
+      const [precisa, acao, antes] = rota;
       if (NIVEL[quem.papel] < NIVEL[precisa]) return responder(res, 403, { erro: 'Essa parte é só pra staff.' });
+      antes?.(quem);
       const corpo = req.method === 'POST' ? await lerCorpo(req, limites[chave]) : null;
       responder(res, 200, await acao(corpo, url, quem));
     } catch (erro) {
