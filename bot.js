@@ -44,8 +44,8 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, lerVinculados, perfilDe, perfilGuardado, redesPublicas, salvarPerfil, textoDoAniversario, todosOsPerfis, vincularPerfil, visualDoPerfil } from './lib/perfil.js';
-import { cartaoGuardado, esquecerCartao } from './lib/redes.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, lerVinculados, ligarSpotify, ligarTwitch, perfilDe, perfilGuardado, redesPublicas, salvarPerfil, textoDoAniversario, todosOsPerfis, vincularPerfil, visualDoPerfil } from './lib/perfil.js';
+import { cartaoGuardado, esquecerCartao, esquecerOuvidas, faixaDoStatus, gravarOuvidas, idDoSpotify, mudouOuvindo, ouvindoAgora, perfilSpotify, temSpotify, temTwitch, ultimasOuvidas } from './lib/redes.js';
 import { acharCapa, capaDaGaleria, capaPermitida, capaSugerida, podeProcurar, podeSugerir, sugerir, TIPOS_FAVORITOS } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
@@ -84,7 +84,8 @@ const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChanne
 // AutoModerationExecution = quando a AutoMod do Discord barra alguém (pra avisar/expulsar e anotar no livro).
 // MessageContent (privilegiada) = o texto das mensagens na transcrição dos tickets; sem ela o bot conecta sem (lib/conexao.js).
 // GuildVoiceStates = tempo em call (medalhas do perfil no site).
-const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.GuildVoiceStates, I.AutoModerationExecution, I.MessageContent];
+// GuildPresences (privilegiada) = o "Ouvindo Spotify" do status, só de quem ligou o Spotify no perfil; sem ela o bot conecta sem.
+const INTENTS = [I.Guilds, I.GuildExpressions, I.GuildModeration, I.GuildMembers, I.GuildMessages, I.GuildVoiceStates, I.AutoModerationExecution, I.MessageContent, I.GuildPresences];
 
 // Trocado no iniciarBot pelo cliente conectado (export let: quem importa vê o novo)
 export let client = new Client({ intents: INTENTS });
@@ -382,7 +383,7 @@ export function comandos(cfg = dados.config()) {
       .toJSON(),
     new SlashCommandBuilder().setName('trofeus').setDescription('Medalhas e troféus do servidor, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('favoritos').setDescription('Jogos, filmes, livros e músicas favoritos, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
-    new SlashCommandBuilder().setName('redes').setDescription('As redes vinculadas (Steam, Letterboxd, Instagram), em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder().setName('redes').setDescription('As redes vinculadas (Steam, Spotify, Twitch, Letterboxd, Instagram), em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
     new SlashCommandBuilder()
       .setName('painel')
@@ -1792,6 +1793,7 @@ async function apagarCanaisFechados() {
 async function aCada10Minutos() {
   await vestirMascote();
   await gravarEstatisticas();
+  await gravarOuvidas();
   await paraCadaServidor('Tickets', conferirTickets);
 }
 
@@ -1929,6 +1931,21 @@ async function papelDe(userId, guild = servidor()) {
 
 /** Vincular perfil: ligado aqui? já tem um compartilhado? em que outros servidores ele aparece? */
 const vinculoDe = (id) => ({ on: !!lerPerfis()[id]?.vinc, existe: !!lerVinculados()[id], servidores: servidoresVinculados(id) });
+
+/** Spotify pelo link do perfil: confere no Spotify que existe e liga */
+async function ligarPeloLink(userId, texto) {
+  if (!temSpotify()) throw comStatus(503, 'O Spotify ainda não foi ligado no bot.');
+  const id = idDoSpotify(texto);
+  if (!id) return { erro: 'Cola o link do seu perfil do Spotify (no app: seu perfil › ⋯ › Compartilhar › Copiar link do perfil).' };
+  let conta;
+  try {
+    conta = await perfilSpotify(id);
+  } catch {
+    throw comStatus(503, 'O Spotify não respondeu agora. Tenta de novo daqui a pouco.');
+  }
+  if (!conta) return { erro: 'Não achei esse perfil no Spotify. Confere o link.' };
+  return ligarSpotify(userId, conta);
+}
 
 /** Nomes dos outros servidores em que a pessoa usa o perfil compartilhado */
 function servidoresVinculados(userId) {
@@ -2144,6 +2161,7 @@ function mudouDeCall(antes, depois) {
 async function salvarAntesDeSair() {
   fecharCalls();
   await gravarEstatisticas();
+  await gravarOuvidas();
   await dados.esperarGravacao();
 }
 
@@ -2202,15 +2220,32 @@ const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niv
 function imagemDeRede(url) {
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' && ['ltrbxd.com', 'steamstatic.com'].some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`));
+    return u.protocol === 'https:' && ['ltrbxd.com', 'steamstatic.com', 'scdn.co', 'spotifycdn.com', 'jtvnw.net'].some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`));
   } catch {
     return false;
   }
 }
 
 /** Cartões das redes que a pessoa deixou aparecer, com as imagens baixadas */
+/** Spotify: a música de agora (status do Discord) e as últimas ouvidas por cima do cartão (que fica guardado 30 min) */
+function comOuvindo(cartao, userId) {
+  if (cartao.rede !== 'spotify') return cartao;
+  const agora = ouvindoAgora(userId);
+  const ultimas = ultimasOuvidas(userId);
+  if (!ultimas.length) return cartao;
+  const itens = ultimas.slice(0, 3).map((x) => ({ t: x.artista ? `${x.t} — ${x.artista}` : x.t, src: x.capa, s: agora?.id === x.id ? 'tocando agora' : haQuanto(x.quando) }));
+  return { ...cartao, status: agora ? 'OUVINDO AGORA' : cartao.status, itens, rotulo: agora ? 'OUVINDO AGORA' : 'OUVIDAS RECENTEMENTE' };
+}
+
+/** Spotify pelo status do Discord: só de quem ligou o Spotify no perfil (do servidor de onde veio o evento) */
+function mudouPresenca(_, depois) {
+  const userId = depois?.userId;
+  if (!userId || !perfilGuardado(userId)?.redes?.spotify) return;
+  mudouOuvindo(userId, faixaDoStatus(depois.activities));
+}
+
 async function redesDaFicha(m) {
-  const cartoes = await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta)));
+  const cartoes = (await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta)))).map((c) => comOuvindo(c, m.id));
   return Promise.all(cartoes.map(async (c) => ({ ...c, itens: await Promise.all((c.itens ?? []).map(async (it) => ({ ...it, img: imagemDeRede(it.src) ? await baixarImagem(it.src) : null }))) })));
 }
 const PROPORCAO = { jogos: 3 / 4, filmes: 2 / 3, livros: 2 / 3, musicas: 1 };
@@ -2329,6 +2364,7 @@ async function responderPrivacidade(i) {
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
     `🪪 Perfil do site${perfil?.vinc ? ' (vinculado: o mesmo em outros servidores)' : ''}: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ', favoritos' : ''}` : 'nunca mexeu'}`,
     `🔗 Redes vinculadas: ${Object.entries(perfil?.redes ?? {}).map(([r, c]) => (c.user ? `${r} (@${c.user})` : `${r} (ID ${c.id})`)).join(', ') || 'nenhuma'}`,
+    ...(ultimasOuvidas(id).length ? [`🎧 Últimas músicas (Spotify pelo seu status do Discord): ${ultimasOuvidas(id).length}`] : []),
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
   ].join('\n');
@@ -2353,7 +2389,9 @@ export async function apagarMeusDados(i) {
   await apagarPerfil(id);
   await limparImagens({ imediatos: imagens });
   apagarEstatisticas(id);
+  esquecerOuvidas(id);
   await gravarEstatisticas();
+  await gravarOuvidas();
   await i.editReply(montarV2({ cor: 0x2f8f5b, titulo: '🗑️ Pronto, apagado', texto: 'Seu aniversário, perfil, imagens enviadas e contadores das medalhas sumiram. Se continuar no servidor, os contadores recomeçam do zero.' }));
 }
 
@@ -2405,6 +2443,8 @@ export const api = {
       perfil: perfilDe(m.id),
       // Em que outros servidores do bot a pessoa usa o perfil compartilhado
       vinculo: vinculoDe(m.id),
+      // Spotify e Twitch só ligam quando o dono pôs as chaves do app na hospedagem
+      redesApp: { spotify: temSpotify(), twitch: temTwitch() },
       visual: await visualDe(m),
       // O próprio aniversário (só pra quem é dono): o site mostra a data e a prévia de cada visibilidade
       niver: (({ d, ano } = {}) => (d ? { d, ano: ano ?? null } : null))(lerAniversarios().find((x) => x.userId === m.id)),
@@ -2468,10 +2508,19 @@ export const api = {
     const m = await servidor()?.members.fetch(quem.id).catch(() => null);
     if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
     const antes = perfilDe(m.id).redes?.[corpo?.rede];
-    const r = await mudarRede(m.id, corpo);
+    const r = corpo?.rede === 'spotify' && corpo?.acao === 'ligar' ? await ligarPeloLink(m.id, corpo.user) : await mudarRede(m.id, corpo);
     if (r.erro) throw comStatus(400, r.erro);
     if (antes) esquecerCartao(corpo.rede, antes);
+    if (corpo?.rede === 'spotify' && corpo?.acao === 'desligar') esquecerOuvidas(m.id);
     return { ok: true, perfil: r.perfil };
+  },
+  // Volta do login da Twitch, já conferida com a Twitch (api.js)
+  async ligarTwitch(userId, conta) {
+    const antes = perfilDe(userId).redes?.twitch;
+    const r = await ligarTwitch(userId, conta);
+    if (r.erro) console.error('Ligar a Twitch:', r.erro);
+    if (antes) esquecerCartao('twitch', antes);
+    esquecerCartao('twitch', conta);
   },
   // Volta do login da Steam, já conferida com a Steam (api.js)
   async ligarSteam(userId, steamid) {
@@ -2485,7 +2534,7 @@ export const api = {
     if (!guild) throw comStatus(503, 'O bot está dormindo. Tente de novo em 1 minuto.');
     const m = /^\d{15,25}$/.test(String(id ?? '')) ? await guild.members.fetch(String(id)).catch(() => null) : null;
     if (!m) throw comStatus(404, 'Não achei essa pessoa no servidor.');
-    return { redes: await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta))) };
+    return { redes: (await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta)))).map((c) => comOuvindo(c, m.id)) };
   },
 
   // Antes de ler o corpo da imagem: quem passou do limite nem chega a mandar os 8 MB pra memória do bot
@@ -2847,6 +2896,7 @@ function prepararCliente(c) {
   if (!soPainel) c.on(Events.MessageCreate, (msg) => contarMensagem(msg).catch((erro) => console.error('Anti-spam:', erro)));
   if (!soPainel) c.on(Events.MessageCreate, contarParaMedalhas);
   if (!soPainel) c.on(Events.VoiceStateUpdate, mudouDeCall);
+  if (!soPainel) c.on(Events.PresenceUpdate, mudouPresenca);
   if (!soPainel) c.on(Events.GuildMemberAdd, (membro) => voltouSilenciado(membro).catch((erro) => console.error('Silêncio sem prazo:', explicarErro(erro))));
   if (!soPainel) ligarPortaria(c, postarPortaria);
   c.once(Events.ClientReady, async (pronto) => {
@@ -2859,6 +2909,8 @@ function prepararCliente(c) {
         const guild = servidor();
         await registrarComandos(guild);
         for (const v of guild.voiceStates.cache.values()) if (v.channelId && v.channelId !== guild.afkChannelId && !v.member?.user.bot) entrouNaCall(v.id);
+        // Quem já está ouvindo Spotify quando o bot liga (o Discord só avisa na próxima troca de música)
+        for (const p of guild.presences?.cache.values() ?? []) mudouPresenca(null, p);
       });
     }
     // Versão nova no ar? Conta no jornal de cada servidor (espera um pouco pra conexão assentar)

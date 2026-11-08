@@ -430,7 +430,8 @@ export function normalizar(entrada, atual = config()) {
 // Cada servidor tem os próprios arquivos (s-<id>-config.json, s-<id>-perfis.json...): o prefixo entra sozinho quando tem
 // servidor na vez (lib/contexto.js). Estes são de todos: imagens, a lista de painéis enviados (cada um diz o servidor),
 // o registro dos servidores e os perfis vinculados.
-const GLOBAIS = /^(anexos\.json|anexo-|paineis\.json|servidores\.json|perfis-vinculados\.json)/;
+// (e as últimas músicas ouvidas, do Spotify pelo status do Discord)
+const GLOBAIS = /^(anexos\.json|anexo-|paineis\.json|servidores\.json|perfis-vinculados\.json|ouvidas\.json)/;
 // O que era do servidor único (antes do bot cuidar de vários) e vira do servidor padrão na separação
 const DO_SERVIDOR = ['config.json', 'registro.json', 'perfis.json', 'aniversarios.json', 'estatisticas.json', 'avisos.json', 'ocorrencias.json', 'tickets.json'];
 

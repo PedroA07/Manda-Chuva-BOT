@@ -1,9 +1,9 @@
 // API que a interface web (repositório Interface-Manda-Chuva-Bot) usa pra configurar o bot
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { noServidor } from './lib/contexto.js';
-import { conferirSteam, linkDaSteam } from './lib/redes.js';
-import { confirmarConvite, criarEstado, criarEstadoConvite, criarEstadoSteam, criarSessao, lerEstado, lerEstadoConvite, lerEstadoSteam, lerSessao, linkDoConvite, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
+import { noServidor, servidorAtual } from './lib/contexto.js';
+import { conferirSteam, contaDaTwitch, linkDaSteam, linkDaTwitch, temTwitch } from './lib/redes.js';
+import { confirmarConvite, criarEstado, criarEstadoConvite, criarEstadoSteam, criarEstadoTwitch, criarSessao, lerEstado, lerEstadoConvite, lerEstadoSteam, lerEstadoTwitch, lerSessao, linkDoConvite, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
 import { VERSAO } from './lib/versao.js';
 
 const LOCAIS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -31,13 +31,17 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     // Vincular: o mesmo perfil em vários servidores ({ on })
     'POST /api/eu/vinculo': ['membro', (corpo, _, quem) => api.vincularPerfil(quem, corpo)],
     'GET /api/favoritos/sugestoes': ['membro', (_, url, quem) => api.sugestoesDeFavorito(quem, url.searchParams)],
-    // Redes: Letterboxd e Instagram pelo nome; Steam pelo login da própria Steam (volta em /auth/steam/volta)
+    // Redes: Letterboxd e Instagram pelo nome, Spotify pelo link do perfil; Steam e Twitch pelo login da própria rede
+    // (volta em /auth/steam/volta e /auth/twitch/volta, no mesmo servidor em que a pessoa pediu)
     'POST /api/eu/redes': ['membro', (corpo, _, quem) => api.rede(quem, corpo)],
     'POST /api/eu/redes/steam': ['membro', (corpo, _, quem) => {
-      if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
-      const volta = String(corpo?.volta ?? '').split('#')[0];
-      if (!voltaPermitida(volta, origens)) throw comStatus(400, 'Endereço de volta não liberado no PAINEL_ORIGENS.');
-      return { link: linkDaSteam(`${voltaDaSteam()}?estado=${encodeURIComponent(criarEstadoSteam(quem.id, volta))}`) };
+      const volta = voltaDaRede(quem, corpo);
+      return { link: linkDaSteam(`${voltaDaSteam()}?estado=${encodeURIComponent(criarEstadoSteam(quem.id, volta, servidorAtual()))}`) };
+    }],
+    'POST /api/eu/redes/twitch': ['membro', (corpo, _, quem) => {
+      const volta = voltaDaRede(quem, corpo);
+      if (!temTwitch()) throw comStatus(503, 'A Twitch ainda não foi ligada no bot.');
+      return { link: linkDaTwitch({ clientId: process.env.TWITCH_CLIENT_ID, redirect: voltaDaTwitch(), estado: criarEstadoTwitch(quem.id, volta, servidorAtual()) }) };
     }],
     'GET /api/redes': ['membro', (_, url) => api.cartoesDe(url.searchParams.get('id'))],
     'GET /api/publico': ['membro', () => api.publico()],
@@ -68,8 +72,17 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
   const segredo = () => process.env.DISCORD_CLIENT_SECRET ?? '';
   const clientId = () => process.env.DISCORD_CLIENT_ID || api.clientId?.() || null;
   const loginLigado = () => !!(segredo() && clientId());
-  // Volta do login da Steam: endereço público do bot (o mesmo que a Steam devolve no openid.return_to)
-  const voltaDaSteam = () => new URL('/auth/steam/volta', process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || `http://localhost:${porta}`).href;
+  // Volta do login da Steam e da Twitch: endereço público do bot (o da Twitch precisa estar no app do dono, igualzinho)
+  const enderecoPublico = (caminho) => new URL(caminho, process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || `http://localhost:${porta}`).href;
+  const voltaDaSteam = () => enderecoPublico('/auth/steam/volta');
+  const voltaDaTwitch = () => enderecoPublico('/auth/twitch/volta');
+  /** Pra onde o site volta depois do login de uma rede (só site liberado) */
+  function voltaDaRede(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const volta = String(corpo?.volta ?? '').split('#')[0];
+    if (!voltaPermitida(volta, origens)) throw comStatus(400, 'Endereço de volta não liberado no PAINEL_ORIGENS.');
+    return volta;
+  }
 
   /** Quem está chamando: senha (admin) ou sessão do Discord (papel no servidor da vez; livre = só precisa estar logado) */
   async function identificar(req, livre = false) {
@@ -140,8 +153,20 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
       if (!e || !voltaPermitida(e.volta, origens)) return paginaDeVolta(res, 'Esse login da Steam demorou demais (o link vale 10 minutos).', 'vá em <b>Meu perfil › Redes</b> e clique em <b>Conectar com Steam</b> de novo');
       const steamid = await conferirSteam(url.searchParams, voltaDaSteam());
       if (!steamid) return redirecionar(res, `${e.volta}#redes=steam-erro`);
-      await api.ligarSteam?.(e.id, steamid);
+      // No perfil do servidor em que a pessoa clicou (cada servidor tem o seu)
+      await noServidor(e.s || null, () => api.ligarSteam?.(e.id, steamid));
       return redirecionar(res, `${e.volta}#redes=steam-ok`);
+    }
+
+    // ---------- Volta do login da Twitch (Meu perfil › Redes) ----------
+    if (req.method === 'GET' && url.pathname === '/auth/twitch/volta') {
+      const e = lerEstadoTwitch(url.searchParams.get('state'));
+      if (!e || !voltaPermitida(e.volta, origens)) return paginaDeVolta(res, 'Esse login da Twitch demorou demais (o link vale 10 minutos).', 'vá em <b>Meu perfil › Redes</b> e clique em <b>Conectar com Twitch</b> de novo');
+      const code = url.searchParams.get('code');
+      const conta = code && !url.searchParams.get('error') ? await contaDaTwitch({ code, redirect: voltaDaTwitch() }) : null;
+      if (!conta) return redirecionar(res, `${e.volta}#redes=twitch-erro`);
+      await noServidor(e.s || null, () => api.ligarTwitch?.(e.id, conta));
+      return redirecionar(res, `${e.volta}#redes=twitch-ok`);
     }
 
     // Imagens enviadas pelo painel: públicas (vão pro Discord de qualquer jeito) pra <img> conseguir mostrar
