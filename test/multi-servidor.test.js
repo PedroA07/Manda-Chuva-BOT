@@ -167,3 +167,41 @@ test('API: X-Servidor escolhe o servidor (papel conferido nele); servidor descon
   const pre = await fetch(`${base}/api/eu`, { method: 'OPTIONS', headers: { Origin: 'https://site.exemplo', 'Access-Control-Request-Headers': 'x-servidor' } });
   assert.match(pre.headers.get('access-control-allow-headers'), /X-Servidor/);
 });
+
+test('perfil vinculado: o mesmo em A e B, fixadas de cada servidor; desvincular deixa uma cópia; apagar leva o compartilhado', async () => {
+  definirPadrao(null);
+  const p = await import('../lib/perfil.js');
+  p.zerarPerfis();
+  const U = '444444444444444444';
+  await noServidor(A, () => p.salvarPerfil(U, { bio: 'oi de A' }, []));
+  await noServidor(B, () => p.salvarPerfil(U, { bio: 'oi de B' }, []));
+  assert.equal(noServidor(B, () => p.perfilDe(U).bio), 'oi de B');
+  // Vincular A: o de A vira o compartilhado. Vincular B: B passa a mostrar o compartilhado
+  await noServidor(A, () => p.vincularPerfil(U, true));
+  await noServidor(B, () => p.vincularPerfil(U, true));
+  assert.equal(noServidor(B, () => p.perfilDe(U).bio), 'oi de A');
+  assert.equal(noServidor(B, () => p.perfilDe(U).vinc), true);
+  // Mexeu em B, muda em A também
+  await noServidor(B, () => p.salvarPerfil(U, { bio: 'mudei em B' }, []));
+  assert.equal(noServidor(A, () => p.perfilDe(U).bio), 'mudei em B');
+  // Medalhas fixadas são de cada servidor
+  await noServidor(A, () => p.salvarPerfil(U, { fixadas: ['calouro'] }, ['calouro']));
+  assert.deepEqual(noServidor(A, () => p.perfilDe(U).fixadas), ['calouro']);
+  assert.deepEqual(noServidor(B, () => p.perfilDe(U).fixadas), []);
+  // Favoritos vão pro compartilhado
+  await noServidor(A, () => p.mudarFavorito(U, { acao: 'add', tipo: 'jogos', t: 'Minecraft' }, async () => ''));
+  assert.equal(noServidor(B, () => p.perfilDe(U).fav.jogos[0].t), 'Minecraft');
+  // Desvincular B: fica uma cópia, e daí em diante é só de B
+  await noServidor(B, () => p.vincularPerfil(U, false));
+  assert.equal(noServidor(B, () => p.perfilDe(U).fav.jogos[0].t), 'Minecraft');
+  await noServidor(B, () => p.salvarPerfil(U, { bio: 'só em B' }, []));
+  assert.equal(noServidor(A, () => p.perfilDe(U).bio), 'mudei em B');
+  assert.equal(noServidor(B, () => p.perfilDe(U).bio), 'só em B');
+  assert.equal(noServidor(B, () => p.perfilDe(U).vinc), undefined);
+  // Apagar os dados em A (vinculado) leva o compartilhado junto; o de B fica
+  await noServidor(A, () => p.apagarPerfil(U));
+  assert.equal(p.lerVinculados()[U], undefined);
+  assert.equal(noServidor(B, () => p.perfilDe(U).bio), 'só em B');
+  // A limpeza de imagens enxerga o compartilhado
+  assert.ok(p.todosOsPerfis().includes(p.lerVinculados()));
+});

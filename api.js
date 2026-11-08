@@ -28,6 +28,8 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
     'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
     'POST /api/eu/favoritos': ['membro', (corpo, _, quem) => api.favorito(quem, corpo)],
+    // Vincular: o mesmo perfil em vários servidores ({ on })
+    'POST /api/eu/vinculo': ['membro', (corpo, _, quem) => api.vincularPerfil(quem, corpo)],
     'GET /api/favoritos/sugestoes': ['membro', (_, url, quem) => api.sugestoesDeFavorito(quem, url.searchParams)],
     // Redes: Letterboxd e Instagram pelo nome; Steam pelo login da própria Steam (volta em /auth/steam/volta)
     'POST /api/eu/redes': ['membro', (corpo, _, quem) => api.rede(quem, corpo)],

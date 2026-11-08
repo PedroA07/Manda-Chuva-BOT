@@ -44,7 +44,7 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, perfilDe, redesPublicas, salvarPerfil, textoDoAniversario, todosOsPerfis, visualDoPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, lerVinculados, perfilDe, perfilGuardado, redesPublicas, salvarPerfil, textoDoAniversario, todosOsPerfis, vincularPerfil, visualDoPerfil } from './lib/perfil.js';
 import { cartaoGuardado, esquecerCartao } from './lib/redes.js';
 import { acharCapa, capaDaGaleria, capaPermitida, capaSugerida, podeProcurar, podeSugerir, sugerir, TIPOS_FAVORITOS } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
@@ -1927,6 +1927,15 @@ async function papelDe(userId, guild = servidor()) {
   return papel;
 }
 
+/** Vincular perfil: ligado aqui? já tem um compartilhado? em que outros servidores ele aparece? */
+const vinculoDe = (id) => ({ on: !!lerPerfis()[id]?.vinc, existe: !!lerVinculados()[id], servidores: servidoresVinculados(id) });
+
+/** Nomes dos outros servidores em que a pessoa usa o perfil compartilhado */
+function servidoresVinculados(userId) {
+  if (!client?.isReady()) return [];
+  return client.guilds.cache.filter((g) => g.id !== servidorAtual() && noServidor(g.id, () => !!lerPerfis()[userId]?.vinc)).map((g) => g.name);
+}
+
 /** Servidores do bot em que a pessoa está, com o papel dela em cada um (senha do painel: todos, como admin) */
 async function servidoresDe(userId) {
   if (!client?.isReady()) throw comStatus(503, 'O bot está acordando. Tente de novo em 1 minuto.');
@@ -2313,12 +2322,12 @@ async function responderPainel(i) {
 async function responderPrivacidade(i) {
   const id = i.user.id;
   const niver = lerAniversarios().find((p) => p.userId === id);
-  const perfil = lerPerfis()[id];
+  const perfil = perfilGuardado(id);
   const s = lerEstatisticas().pessoas[id];
   const avisos = lerAvisos().filter((a) => a.userId === id).length;
   const lista = [
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
-    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ', favoritos' : ''}` : 'nunca mexeu'}`,
+    `🪪 Perfil do site${perfil?.vinc ? ' (vinculado: o mesmo em outros servidores)' : ''}: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ', favoritos' : ''}` : 'nunca mexeu'}`,
     `🔗 Redes vinculadas: ${Object.entries(perfil?.redes ?? {}).map(([r, c]) => (c.user ? `${r} (@${c.user})` : `${r} (ID ${c.id})`)).join(', ') || 'nenhuma'}`,
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
@@ -2340,7 +2349,7 @@ export async function apagarMeusDados(i) {
   if (id !== i.user.id) return void (await i.reply(efemero({ content: 'Esse botão não é seu.' })));
   await i.deferUpdate();
   await tirarAniversario(id);
-  const imagens = refsDeAnexo(lerPerfis()[id]);
+  const imagens = refsDeAnexo(perfilGuardado(id));
   await apagarPerfil(id);
   await limparImagens({ imediatos: imagens });
   apagarEstatisticas(id);
@@ -2394,12 +2403,24 @@ export const api = {
       papelTxt: quem.papel === 'admin' ? 'Staff · Reitoria' : quem.papel === 'staff' ? `Staff · ${staffNome ?? 'Staff'}` : 'Membro',
       usuario: { id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp, cargos: cargosVisiveis(m) },
       perfil: perfilDe(m.id),
+      // Em que outros servidores do bot a pessoa usa o perfil compartilhado
+      vinculo: vinculoDe(m.id),
       visual: await visualDe(m),
       // O próprio aniversário (só pra quem é dono): o site mostra a data e a prévia de cada visibilidade
       niver: (({ d, ano } = {}) => (d ? { d, ano: ano ?? null } : null))(lerAniversarios().find((x) => x.userId === m.id)),
       medalhas,
       stats: { mensagens: s?.m ?? 0, horas: Math.floor(tempoDeCall(m.id).total / 3600), medalhas: medalhas.filter((x) => x.ganha).length },
     };
+  },
+
+  // Meu perfil › Vincular: usar neste servidor o perfil compartilhado (ou voltar a ter um só daqui)
+  async vincularPerfil(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const m = await servidor()?.members.fetch(quem.id).catch(() => null);
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    const r = await vincularPerfil(m.id, corpo?.on === true);
+    if (r.erro) throw comStatus(500, r.erro);
+    return { ok: true, perfil: r.perfil, vinculo: vinculoDe(m.id), visual: await visualDe(m, r.perfil) };
   },
 
   async salvarPerfil(quem, corpo) {
@@ -2484,7 +2505,7 @@ export const api = {
 
   // Imagem de link que o site mostra pelo bot (só o link salvo no perfil, nunca um endereço que venha no pedido)
   async imagemDoPerfil(id, tipo) {
-    const link = lerPerfis()[id]?.[tipo === 'foto' ? 'aLink' : 'bLink'];
+    const link = perfilGuardado(id)?.[tipo === 'foto' ? 'aLink' : 'bLink'];
     return link ? lerLink(link) : null;
   },
 
