@@ -335,3 +335,34 @@ test('vermelho no azul-marinho tem pouco contraste: o rótulo vira a cor do text
   const { corDeDestaque } = await import('../lib/aparencia.js');
   assert.equal(corDeDestaque({ fundo: '#1F2A5C', destaque: '#C4363C' }), '#FFFCF4');
 });
+
+test('favoritos: adiciona com a capa achada, sem repetir, até 5 por lista; tirar e esconder', async () => {
+  const { mudarFavorito, favoritosPublicos } = await import('../lib/perfil.js');
+  zerarPerfis();
+  const procurou = [];
+  const achar = async (tipo, nome) => (procurou.push(`${tipo}:${nome}`), nome === 'Valorant' ? '' : `https://upload.wikimedia.org/${nome}.png`);
+  const r = await mudarFavorito(ID, { acao: 'add', tipo: 'jogos', t: '  Minecraft  ' }, achar);
+  assert.deepEqual(r.perfil.fav.jogos, [{ t: 'Minecraft', capa: 'https://upload.wikimedia.org/Minecraft.png' }]);
+  assert.deepEqual(procurou, ['jogos:Minecraft']);
+  assert.match((await mudarFavorito(ID, { acao: 'add', tipo: 'jogos', t: 'minecraft' }, achar)).erro, /já está/);
+  assert.equal((await mudarFavorito(ID, { acao: 'add', tipo: 'jogos', t: 'Valorant' }, achar)).perfil.fav.jogos[1].capa, '');
+  for (const t of ['A', 'B', 'C']) await mudarFavorito(ID, { acao: 'add', tipo: 'jogos', t }, achar);
+  assert.match((await mudarFavorito(ID, { acao: 'add', tipo: 'jogos', t: 'D' }, achar)).erro, /Máximo de 5/);
+  assert.match((await mudarFavorito(ID, { acao: 'add', tipo: 'filmes', t: 'x'.repeat(61) }, achar)).erro, /60/);
+  assert.match((await mudarFavorito(ID, { acao: 'add', tipo: 'filmes', t: '   ' }, achar)).erro, /nome/);
+  assert.match((await mudarFavorito(ID, { acao: 'add', tipo: 'series', t: 'X' }, achar)).erro, /não existe/);
+  assert.match((await mudarFavorito(ID, { acao: 'trocar', tipo: 'jogos' }, achar)).erro, /inválida/);
+  const tirou = await mudarFavorito(ID, { acao: 'tirar', tipo: 'jogos', t: 'Valorant' }, achar);
+  assert.deepEqual(tirou.perfil.fav.jogos.map((x) => x.t), ['Minecraft', 'A', 'B', 'C']);
+  await mudarFavorito(ID, { acao: 'add', tipo: 'musicas', t: 'Evidências' }, achar);
+  assert.deepEqual(favoritosPublicos(perfilDe(ID)).map((f) => f.tipo), ['jogos', 'musicas']);
+  await mudarFavorito(ID, { acao: 'mostrar', tipo: 'jogos', on: false }, achar);
+  assert.deepEqual(favoritosPublicos(perfilDe(ID)).map((f) => f.tipo), ['musicas']);
+  assert.equal(perfilDe(ID).fav.jogos.length, 4); // escondido não é apagado
+});
+
+test('favoritos: perfil antigo começa com as 4 listas vazias e aparecendo', () => {
+  zerarPerfis();
+  lerPerfis()[ID] = { banner: 'banners/perfil/jogos-2.jpg', bio: '', fixadas: [] };
+  assert.deepEqual(perfilDe(ID).fav, { jogos: [], filmes: [], livros: [], musicas: [], mostrar: { jogos: true, filmes: true, livros: true, musicas: true } });
+});

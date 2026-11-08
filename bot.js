@@ -40,7 +40,8 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, MEDALHAS, medalhasDe, mudarFavorito, perfilDe, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
+import { acharCapa, capaDaGaleria, capaPermitida, podeProcurar } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -191,6 +192,7 @@ async function responderInteracao(interacao) {
     painel: responderPainel,
     regras: responderRegras,
     trofeus: (i) => responderFicha(i, 'trofeus'),
+    favoritos: (i) => responderFicha(i, 'favoritos'),
   }[interacao.commandName];
   if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
@@ -336,9 +338,10 @@ export function comandos(cfg = dados.config()) {
       .setName('perfil')
       .setDescription('Mostra a carteirinha com banner, foto e medalhas')
       .addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)'))
-      .addBooleanOption((o) => o.setName('completo').setDescription('Tudo: aniversário e troféus (só o que a pessoa deixou ver)'))
+      .addBooleanOption((o) => o.setName('completo').setDescription('Tudo: aniversário, favoritos e troféus (só o que a pessoa deixou ver)'))
       .toJSON(),
     new SlashCommandBuilder().setName('trofeus').setDescription('Medalhas e troféus do servidor, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder().setName('favoritos').setDescription('Jogos, filmes, livros e músicas favoritos, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
     new SlashCommandBuilder()
       .setName('painel')
@@ -1750,6 +1753,8 @@ async function cartaoDoMembro(m) {
     id: m.id, nome: m.displayName, usuario: m.user.username, avatar: v.avatar, entrou: m.joinedTimestamp,
     banner: v.banner, cor: v.cor, bio: p.bio, medalhas: p.fixadas.filter((id) => ganhas.has(id)), cargos: cargosVisiveis(m, 3),
     ap: p.ap, niver,
+    // Só as listas que a pessoa deixou aparecer
+    fav: favoritosPublicos(p).map((f) => ({ tipo: f.tipo, itens: f.itens })),
   };
 }
 
@@ -1851,7 +1856,19 @@ async function dadosDoCabecalho(m) {
   };
 }
 
-const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niver: ['aniversario', 'ANIVERSÁRIO'] };
+const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niver: ['aniversario', 'ANIVERSÁRIO'], favoritos: ['favoritos', 'FAVORITOS'] };
+const PROPORCAO = { jogos: 3 / 4, filmes: 2 / 3, livros: 2 / 3, musicas: 1 };
+
+/** Favoritos públicos com as capas baixadas (a capa que falhar vira o banner da galeria) */
+async function favoritosDaFicha(m) {
+  return Promise.all(
+    favoritosPublicos(perfilDe(m.id)).map(async (f) => ({
+      nome: f.nome.toUpperCase(),
+      proporcao: PROPORCAO[f.tipo],
+      itens: await Promise.all(f.itens.map(async (x) => ({ t: x.t, img: (capaPermitida(x.capa) ? await baixarImagem(x.capa) : null) ?? (await baixarImagem(midia(capaDaGaleria(f.tipo, x.t)).url)) }))),
+    })),
+  );
+}
 
 /** /perfil completo, /trofeus e /aniversario ver: ficha em imagem de alguém (padrão: quem pediu) */
 async function responderFicha(i, tipo) {
@@ -1863,10 +1880,19 @@ async function responderFicha(i, tipo) {
   const [prefixo, titulo] = FICHAS[tipo];
   const completo = tipo === 'completo';
   // Sem imagem (canvas ou download falhou): responde em texto, sem deixar o "pensando…" pendurado
-  const emTexto = () => [completo ? perfilEmTexto(m) : `**${m.displayName}**`, tipo !== 'trofeus' && `🎂 ${aniversarioDaFicha(m)}`, tipo !== 'niver' && `🏅 ${medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.nome).join(', ')}`].filter(Boolean).join('\n');
+  const emTexto = () => {
+    const favs = favoritosPublicos(perfilDe(m.id)).map((f) => `⭐ ${f.nome}: ${f.itens.map((x) => x.t).join(', ')}`);
+    return [
+      completo ? perfilEmTexto(m) : `**${m.displayName}**`,
+      (completo || tipo === 'niver') && `🎂 ${aniversarioDaFicha(m)}`,
+      ...(completo || tipo === 'favoritos' ? favs : []),
+      (completo || tipo === 'trofeus') && `🏅 ${medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.nome).join(', ')}`,
+    ].filter(Boolean).join('\n');
+  };
   try {
     const d = completo ? await dadosDaCarteirinha(m) : await dadosDoCabecalho(m);
     if (completo || tipo === 'niver') d.niver = aniversarioDaFicha(m);
+    if (completo || tipo === 'favoritos') d.favoritos = await favoritosDaFicha(m);
     if (completo || tipo === 'trofeus') d.trofeus = await trofeusDe(m);
     const png = await desenharFicha(d, { tipo: completo ? 'completo' : 'titulo', titulo });
     if (!png) throw new Error('o canvas não carregou');
@@ -1943,7 +1969,7 @@ async function responderPrivacidade(i) {
   const avisos = lerAvisos().filter((a) => a.userId === id).length;
   const lista = [
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
-    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
+    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ' e favoritos' : ''}` : 'nunca mexeu'}`,
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
   ].join('\n');
@@ -2030,6 +2056,17 @@ export const api = {
     const r = await salvarPerfil(m.id, corpo, medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id), provas);
     if (r.erro) throw comStatus(400, r.erro);
     return { ok: true, perfil: r.perfil, visual: await visualDe(m, r.perfil) };
+  },
+
+  // Favoritos de Meu perfil: adicionar (o bot procura a capa), tirar ou esconder uma lista
+  async favorito(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const m = await servidor()?.members.fetch(quem.id).catch(() => null);
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    if (corpo?.acao === 'add' && !podeProcurar(m.id)) throw comStatus(429, 'Calma aí: dá pra adicionar até 15 favoritos a cada 10 minutos.');
+    const r = await mudarFavorito(m.id, corpo, (tipo, nome) => acharCapa(tipo, nome));
+    if (r.erro) throw comStatus(400, r.erro);
+    return { ok: true, perfil: r.perfil };
   },
 
   // Antes de ler o corpo da imagem: quem passou do limite nem chega a mandar os 8 MB pra memória do bot

@@ -22,6 +22,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'GET /api/eu': ['membro', (_, __, quem) => api.eu(quem)],
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
     'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
+    'POST /api/eu/favoritos': ['membro', (corpo, _, quem) => api.favorito(quem, corpo)],
     'GET /api/publico': ['membro', () => api.publico()],
     'GET /api/turma': ['membro', (_, url) => api.turma(url.searchParams)],
     'GET /api/estado': ['staff', (_, url) => api.estado(url.searchParams.get('servidor'))],

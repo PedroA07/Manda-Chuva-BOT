@@ -277,3 +277,14 @@ test('ficha com título: sem banner, mais baixa, e cresce com mais troféus', as
   const niver = await desenharFicha({ ...FICHA, niver: 'Escondido pelo dono do perfil.' }, { tipo: 'titulo', titulo: 'ANIVERSÁRIO' });
   assert.ok(tamanhoPng(niver)[1] < a1);
 });
+
+test('ficha de favoritos: cada lista vira uma linha de capas; sem nenhuma pública, um aviso', async () => {
+  const capa = pngLiso('#9b59b6', 60, 90);
+  const favoritos = [{ nome: 'JOGOS', proporcao: 3 / 4, itens: [{ t: 'Minecraft', img: capa }, { t: 'Um nome bem comprido que quebra em duas linhas e ainda sobra', img: null }] }, { nome: 'MÚSICAS', proporcao: 1, itens: [{ t: 'Evidências', img: capa }] }];
+  const png = await desenharFicha({ ...FICHA, favoritos }, { tipo: 'titulo', titulo: 'FAVORITOS' });
+  const vazio = await desenharFicha({ ...FICHA, favoritos: [] }, { tipo: 'titulo', titulo: 'FAVORITOS' });
+  const [, a] = tamanhoPng(png), [, av] = tamanhoPng(vazio);
+  assert.ok(a > av + 300, `${av} → ${a}`);
+  // primeira capa: roxa por dentro
+  assert.equal(await corEm(png, 32 + 88, 166 + 22 + 12 + 117), '#9b59b6');
+});
