@@ -25,6 +25,7 @@ import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvar
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { desenharCarteirinha, desenharFicha, nomeDoArquivo, tempoDeCasa } from './lib/carteirinha.js';
 import { conectar } from './lib/conexao.js';
+import { traduzirConfig } from './lib/copiar.js';
 import { noServidor, servidorAtual } from './lib/contexto.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
@@ -1928,7 +1929,7 @@ async function papelDe(userId, guild = servidor()) {
 
 /** Servidores do bot em que a pessoa está, com o papel dela em cada um (senha do painel: todos, como admin) */
 async function servidoresDe(userId) {
-  if (!client?.isReady()) return [];
+  if (!client?.isReady()) throw comStatus(503, 'O bot está acordando. Tente de novo em 1 minuto.');
   const lista = [];
   for (const g of client.guilds.cache.values()) {
     const papel = userId ? await papelDe(userId, g) : 'admin';
@@ -2752,6 +2753,19 @@ export const api = {
     const guild = servidor();
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
     return { obra: comecarObra('renomear', (t) => renomearServidor(guild, t)) };
+  },
+  // Copiar a config de outro servidor (canais e cargos viram os de mesmo nome aqui). Não grava: o painel mostra e só vale no Salvar.
+  async copiarConfig(corpo, quem) {
+    const destino = servidor();
+    const origem = servidor(String(corpo?.de ?? ''));
+    if (!destino || !origem || origem.id === destino.id) throw comStatus(400, 'Escolha outro servidor pra copiar.');
+    if (quem?.tipo === 'discord' && (await papelDe(quem.id, origem)) !== 'admin') throw comStatus(403, 'Só dá pra copiar de um servidor que você também gerencia.');
+    const { cfg: nova, achados, faltando } = traduzirConfig(noServidor(origem.id, () => dados.config()), origem, destino);
+    const { cfg } = dados.normalizar(nova, dados.config());
+    const rel = [`Configuração de ${origem.name} copiada. Confira as abas e clique em Salvar pra valer aqui.`];
+    if (achados) rel.push(`${achados} canal(is) e cargo(s) achado(s) pelo nome.`);
+    if (faltando.length) rel.push(`Não tem aqui (ficou vazio pra escolher): ${faltando.slice(0, 12).join(', ')}${faltando.length > 12 ? '…' : ''}.`);
+    return { config: cfg, relatorio: rel };
   },
   andamentoServidor: () => ({ obra: obraDaVez(), montado: lerRegistro().srvMontado ?? null }),
 

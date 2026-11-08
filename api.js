@@ -57,6 +57,8 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/servidor/montar': ['admin', () => api.montarServidor()],
     'POST /api/servidor/renomear': ['admin', () => api.renomearServidor()],
     'GET /api/servidor/andamento': ['staff', () => api.andamentoServidor()],
+    // Copiar a config de outro servidor que a pessoa também gerencia (só mostra; vale no Salvar)
+    'POST /api/servidor/copiar': ['admin', (corpo, _, quem) => api.copiarConfig(corpo, quem)],
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
   const limites = { 'POST /api/anexo': 12_000_000, 'POST /api/eu/anexo': 12_000_000 };
