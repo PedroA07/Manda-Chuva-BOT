@@ -38,6 +38,10 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/ocorrencias/desfazer': ['staff', (corpo) => api.desfazer(corpo)],
     'POST /api/tickets/acao': ['staff', (corpo, _, quem) => api.ticketAcao(corpo, quem)],
     'POST /api/regras/enviar': ['staff', () => api.enviarRegras()],
+    // Montar e renomear mexem no servidor inteiro: só quem gerencia o servidor (ou a senha do painel)
+    'POST /api/servidor/montar': ['admin', () => api.montarServidor()],
+    'POST /api/servidor/renomear': ['admin', () => api.renomearServidor()],
+    'GET /api/servidor/andamento': ['staff', () => api.andamentoServidor()],
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
   const limites = { 'POST /api/anexo': 12_000_000, 'POST /api/eu/anexo': 12_000_000 };

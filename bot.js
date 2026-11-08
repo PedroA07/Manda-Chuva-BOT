@@ -26,7 +26,8 @@ import { desenharCarteirinha, desenharFicha, nomeDoArquivo, tempoDeCasa } from '
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
-import { errosDaHierarquia, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
+import { errosDaHierarquia, lerSeparador, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
+import { CARGOS_POR_BOTAO, CARGOS_SRV, CARGOS_STAFF, CATS_SRV, chave, formatarNome, planoDoModelo, SO_LEITURA } from './lib/servidor.js';
 import { midia, PADROES } from './lib/imagens.js';
 import { lerLink } from './lib/link.js';
 import { anotar, ativos, consequencia, darAviso, filtrarMembros, lerAvisos, lerOcorrencias, linhaDoRegistro, marcarDesfeita, pagina, semPrazo, SILENCIOS, TIPOS, tirarAviso } from './lib/moderacao.js';
@@ -184,6 +185,7 @@ async function responderInteracao(interacao) {
   if (interacao.isChatInputCommand() && interacao.commandName === 'medalha') return responderMedalha(interacao);
   if (interacao.isButton() && interacao.customId.startsWith('priv:apagar:')) return apagarMeusDados(interacao).catch((erro) => console.error('Privacidade:', erro));
   if (interacao.isButton() && interacao.customId === ID_ACEITO) return aceitarRegras(interacao);
+  if (interacao.isButton() && interacao.customId.startsWith('jogo:')) return alternarCargoDeJogo(interacao);
   const outro = interacao.isChatInputCommand() && {
     perfil: responderPerfil,
     medalhas: responderMedalhas,
@@ -1233,6 +1235,265 @@ async function publicarPainelTickets(guild, rel, cfg = dados.config()) {
   }
 }
 
+// ---------- Aba Servidor: montar e renomear ----------
+// Roda em segundo plano (dezenas de chamadas ao Discord, com limite de velocidade); o painel acompanha pelo andamento.
+let obra = null; // { tipo, status: 'andando' | 'pronto' | 'erro', passo, feitos, total, rel, inicio, fim }
+
+/** Começa a obra se não tiver outra andando. fazer(t, rel) mexe no Discord e conta em t.feitos. */
+function comecarObra(tipo, fazer) {
+  if (obra?.status === 'andando') throw comStatus(409, 'Já tem uma obra em andamento. Espera terminar.');
+  const t = { tipo, status: 'andando', passo: 'Começando…', feitos: 0, total: 0, rel: [], inicio: Date.now(), fim: null };
+  obra = t;
+  fazer(t)
+    .then(() => (t.status = 'pronto'))
+    .catch((erro) => {
+      t.status = 'erro';
+      t.rel.push(`⚠️ Parou no meio: ${explicarErro(erro)}`);
+      console.error(`Obra (${tipo}):`, erro);
+    })
+    .finally(async () => {
+      t.fim = Date.now();
+      t.passo = '';
+      if (tipo === 'montar' && t.status === 'pronto') await salvarRegistro({ srvMontado: t.fim });
+    });
+  return t;
+}
+
+/** Nome de uma peça do modelo: com a fonte da aba (se ligada no Montar) ou do jeito simples */
+function nomeDaObra(srv, alvo, nome, emoji, voz, comFonte) {
+  if (comFonte) return formatarNome(alvo, nome, emoji, voz, srv.f[alvo]);
+  return alvo === 'canais' && !voz ? nome.toLowerCase().replace(/\s+/g, '-') : nome;
+}
+
+/** Permissões que o bot pode dar (só as que ele tem) */
+const queOBotTem = (guild, lista) => lista.filter((p) => guild.members.me?.permissions.has(p));
+const PERMS_PAPEL = {
+  admin: [P.ManageChannels, P.ManageRoles, P.ManageMessages, P.KickMembers, P.BanMembers, P.ModerateMembers, P.ViewAuditLog],
+  'moderação': [P.ManageMessages, P.ModerateMembers, P.KickMembers, P.ViewAuditLog],
+};
+const PERMS_DO_BOT_NO_CANAL = [P.ViewChannel, P.SendMessages, P.EmbedLinks, P.AttachFiles, P.ReadMessageHistory, P.Connect, P.Speak];
+
+/**
+ * Permissões do modelo pra uma categoria: Portaria todo mundo vê; Staff só a staff; o resto só quem tem Verificado
+ * (e a staff). O bot sempre vê. [{ id, type (0 cargo, 1 membro), allow, deny }]. Calculada, não lida do cache:
+ * o cache só atualiza quando o Discord avisa, e canal novo não pode nascer aberto.
+ */
+function permissoesDoModelo(guild, catId, cargos) {
+  const lista = [{ id: client.user.id, type: 1, allow: queOBotTem(guild, PERMS_DO_BOT_NO_CANAL), deny: [] }];
+  if (catId === 'portaria') return lista;
+  lista.push({ id: guild.id, type: 0, allow: [], deny: [P.ViewChannel] });
+  for (const nome of [...CARGOS_STAFF, ...(catId === 'staff' ? [] : ['Verificado'])]) {
+    const r = cargos.get(nome);
+    if (r) lista.push({ id: r.id, type: 0, allow: [P.ViewChannel], deny: [] });
+  }
+  return lista;
+}
+
+const nomeDaPermissao = (bit) => Object.keys(P).find((k) => P[k] === bit);
+/** Aplica com edit (junta com o que já tinha): nunca apaga permissão que a pessoa pôs à mão */
+async function aplicarPermissoes(alvo, lista) {
+  for (const o of lista) {
+    const mudancas = { ...Object.fromEntries(o.allow.map((p) => [nomeDaPermissao(p), true])), ...Object.fromEntries(o.deny.map((p) => [nomeDaPermissao(p), false])) };
+    await alvo.permissionOverwrites.edit(o.id, mudancas, { reason: 'Montar servidor', type: o.type });
+  }
+}
+
+/** Canal da Portaria em que só o bot e a staff escrevem */
+async function soLeitura(guild, canal, cargos) {
+  await canal.permissionOverwrites.edit(guild.id, { SendMessages: false, CreatePublicThreads: false, CreatePrivateThreads: false }, { reason: 'Montar servidor', type: 0 });
+  for (const nome of CARGOS_STAFF) {
+    const r = cargos.get(nome);
+    if (r) await canal.permissionOverwrites.edit(r.id, { SendMessages: true }, { reason: 'Montar servidor', type: 0 });
+  }
+}
+
+/** Mensagem com os botões dos cargos de jogo e de aviso (cada um pega e tira sozinho). Edita a mesma depois. */
+async function publicarCargosPorBotao(guild, canal, cargos, rel) {
+  const lista = CARGOS_POR_BOTAO.map((n) => [n, cargos.get(n)]).filter(([, r]) => r && r.editable && !ehPerigoso(r));
+  if (!lista.length) return;
+  const botoes = lista.map(([n, r]) => ({ type: 2, style: 2, custom_id: `jogo:${r.id}`, label: n, emoji: { name: CARGOS_SRV.find((c) => c[0] === n)[2] } }));
+  const linhas = [];
+  for (let i = 0; i < botoes.length; i += 5) linhas.push({ type: 1, components: botoes.slice(i, i + 5) });
+  const msg = montarV2({
+    cor: 0x5865f2,
+    titulo: '🎮 Cargos de jogo e de aviso',
+    texto: 'Clica no jogo pra ganhar o cargo e ser chamado nas partidas. Clicou de novo, tirou.\n**Ping de eventos** avisa quando tem evento no servidor.',
+    linhas,
+  });
+  const antes = lerRegistro().jogosMsg;
+  let feita = antes?.canalId === canal.id ? await canal.messages.edit(antes.mensagemId, msg).catch(() => null) : null;
+  if (!feita) {
+    feita = await canal.send(msg);
+    if (antes) await guild.channels.cache.get(antes.canalId)?.messages?.delete(antes.mensagemId).catch(() => {});
+  }
+  await salvarRegistro({ jogosMsg: { canalId: canal.id, mensagemId: feita.id }, jogos: lista.map(([, r]) => r.id) });
+  rel.push(`Botões dos cargos de jogo em #${canal.name}.`);
+}
+
+/** Botão de cargo de jogo: dá ou tira (só os cargos que o Montar pôs na mensagem) */
+async function alternarCargoDeJogo(i) {
+  try {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const id = i.customId.slice(5);
+    const cargo = (lerRegistro().jogos ?? []).includes(id) ? i.guild.roles.cache.get(id) : null;
+    if (!cargo) return void (await i.editReply('Esse cargo não existe mais. Avisa a staff.'));
+    if (ehPerigoso(cargo) || !cargo.editable) return void (await i.editReply('Não consigo mexer nesse cargo agora (ele está acima do meu). Avisa a staff.'));
+    const tem = i.member.roles.cache.has(id);
+    if (tem) await i.member.roles.remove(cargo, 'Botão de cargo de jogo');
+    else await i.member.roles.add(cargo, 'Botão de cargo de jogo');
+    await i.editReply({ content: tem ? `Tirei o cargo <@&${id}>.` : `Pronto! Agora você tem <@&${id}>. Bora jogar.`, allowedMentions: { parse: [] } });
+  } catch (erro) {
+    console.error('Cargo de jogo:', erro.message);
+    await i.editReply(`⚠️ ${explicarErro(erro)}`).catch(() => {});
+  }
+}
+
+/** O que o bot usa e nunca pode sumir no "apagar o que não está no modelo" */
+function protegidosDaObra(guild, cfg) {
+  const canais = new Set([
+    ...dados.paineis().map((p) => p.canalId), cfg.noticias.canalId, cfg.moderacao.canalId, cfg.niver.canalId, cfg.regras.canalId,
+    ...Object.values(cfg.portaria).map((e) => e.canalId), cfg.tickets.canalId, cfg.tickets.logsId, cfg.tickets.categoriaId,
+    lerRegistro().regrasMsg?.canalId, lerRegistro().jogosMsg?.canalId, lerTickets().painel?.canalId, ...lerTickets().abertos.map((x) => x.canalId),
+    guild.rulesChannelId, guild.publicUpdatesChannelId, guild.safetyAlertsChannelId, guild.systemChannelId, guild.afkChannelId,
+  ].filter(Boolean));
+  for (const c of guild.channels.cache.values()) if (c.name === NOME_DEPOSITO) canais.add(c.id);
+  const cargos = new Set([
+    ...cfg.cores.map((c) => c.cargoId), cfg.tickets.staffId, cfg.regras.cargoId, cfg.portaria.entrada.cargoAuto?.cargoId, cfg.noticias.mencao,
+  ].filter(Boolean));
+  return { canais, cargos };
+}
+
+/** Montar: cargos, categorias e canais do modelo (reaproveita pelo nome), permissões, botões e, se pedido, apaga o resto */
+async function montarServidor(guild, t) {
+  const cfg = dados.config(), srv = cfg.srv, plano = planoDoModelo(srv), comFonte = srv.opt.fontes;
+  t.total = plano.cargos.length + plano.cats.reduce((a, c) => a + 1 + c.canais.length, 0);
+  const rel = t.rel, conta = { cargos: 0, canais: 0, renomeados: 0 };
+  await guild.roles.fetch();
+  await guild.channels.fetch();
+
+  const cargos = new Map();
+  for (const c of plano.cargos) {
+    t.passo = `Cargo ${c.nome}`;
+    const nome = nomeDaObra(srv, 'cargos', c.nome, c.emoji, false, comFonte);
+    let r = guild.roles.cache.find((x) => x.id !== guild.id && !x.managed && chave(x.name) === chave(c.nome));
+    if (!r) {
+      r = await guild.roles.create({
+        name: nome, colors: { primaryColor: hexParaInt(c.cor) }, permissions: queOBotTem(guild, PERMS_PAPEL[c.papel] ?? []),
+        hoist: CARGOS_STAFF.includes(c.nome), mentionable: CARGOS_POR_BOTAO.includes(c.nome), reason: 'Montar servidor',
+      });
+      conta.cargos++;
+    } else if (comFonte && r.name !== nome && r.editable) {
+      await r.setName(nome, 'Montar servidor');
+      conta.renomeados++;
+    }
+    cargos.set(c.nome, r);
+    t.feitos++;
+  }
+
+  const usados = new Set();
+  for (const cat of plano.cats) {
+    t.passo = `Categoria ${cat.nome}`;
+    const nomeCat = nomeDaObra(srv, 'categorias', cat.nome, cat.emoji, false, comFonte);
+    let categoria = guild.channels.cache.find((x) => x.type === ChannelType.GuildCategory && !usados.has(x.id) && chave(x.name) === chave(cat.nome));
+    if (!categoria) {
+      categoria = await guild.channels.create({ name: nomeCat, type: ChannelType.GuildCategory, reason: 'Montar servidor' });
+      conta.canais++;
+    } else if (comFonte && categoria.name !== nomeCat) {
+      await categoria.setName(nomeCat, 'Montar servidor');
+      conta.renomeados++;
+    }
+    usados.add(categoria.id);
+    const perms = srv.opt.perms ? permissoesDoModelo(guild, cat.id, cargos) : [];
+    await aplicarPermissoes(categoria, perms);
+    // Canal novo nasce com as permissões da categoria: as que ela já tinha (cache) + as do modelo por cima
+    const doModelo = new Set(perms.map((o) => o.id));
+    const herda = [...categoria.permissionOverwrites.cache.filter((o) => !doModelo.has(o.id)).map((o) => ({ id: o.id, type: o.type, allow: o.allow, deny: o.deny })), ...perms];
+    t.feitos++;
+    for (const ch of cat.canais) {
+      t.passo = ch.voz ? `🔊 ${ch.nome}` : `#${ch.nome}`;
+      const tipo = ch.voz ? ChannelType.GuildVoice : ChannelType.GuildText;
+      const nome = nomeDaObra(srv, 'canais', ch.nome, ch.emoji, ch.voz, comFonte);
+      let canal = guild.channels.cache.find((x) => x.type === tipo && !usados.has(x.id) && chave(x.name) === chave(ch.nome));
+      if (!canal) {
+        canal = await guild.channels.create({ name: nome, type: tipo, parent: categoria.id, permissionOverwrites: herda, reason: 'Montar servidor' });
+        conta.canais++;
+      } else {
+        if (canal.parentId !== categoria.id) await canal.setParent(categoria.id, { lockPermissions: false, reason: 'Montar servidor' });
+        if (comFonte && canal.name !== nome) {
+          await canal.setName(nome, 'Montar servidor');
+          conta.renomeados++;
+        }
+        // Canal que já existia guarda as permissões dele: só ganha as do modelo por cima
+        await aplicarPermissoes(canal, perms);
+      }
+      if (srv.opt.perms && cat.id === 'portaria' && SO_LEITURA.includes(ch.nome)) await soLeitura(guild, canal, cargos);
+      usados.add(canal.id);
+      t.feitos++;
+      if (ch.nome === 'escolha-sua-cor' && srv.opt.autoJogos) {
+        t.passo = 'Botões dos cargos de jogo';
+        await publicarCargosPorBotao(guild, canal, cargos, rel).catch((erro) => rel.push(`⚠️ Não consegui pôr os botões dos cargos de jogo: ${explicarErro(erro)}`));
+      }
+    }
+  }
+  rel.unshift(`Montado: ${plano.resumo}. Criados: ${conta.cargos} cargo(s) e ${conta.canais} canal(is)/categoria(s); ${conta.renomeados} renomeado(s); o resto foi reaproveitado.`);
+
+  // A aba Regras passa a usar o #regras e o Verificado do modelo, se ainda não tinha escolhido
+  const regrasCanal = [...usados].map((id) => guild.channels.cache.get(id)).find((c) => c?.type === ChannelType.GuildText && chave(c.name) === 'regras');
+  const novo = structuredClone(cfg);
+  if (!novo.regras.canalId && regrasCanal) novo.regras.canalId = regrasCanal.id;
+  if (!novo.regras.cargoId && cargos.get('Verificado')) novo.regras.cargoId = cargos.get('Verificado').id;
+  if (novo.regras.canalId !== cfg.regras.canalId || novo.regras.cargoId !== cfg.regras.cargoId) {
+    dados.salvarConfig(novo);
+    rel.push('A aba Regras agora usa o #regras e o cargo Verificado do modelo. Envie as regras lá pra liberar o servidor pra quem aceitar.');
+  }
+
+  if (srv.opt.apagar) await apagarForaDoModelo(guild, novo, usados, new Set([...cargos.values()].map((r) => r.id)), t);
+}
+
+/** "Apagar o que não está no modelo": canais e cargos de fora, menos o que o bot usa, integrações, cor e separadores */
+async function apagarForaDoModelo(guild, cfg, usados, cargosDoModelo, t) {
+  const { canais, cargos } = protegidosDaObra(guild, cfg);
+  let nCanais = 0, nCargos = 0;
+  // Canais primeiro, categorias por último (categoria com canal protegido dentro fica)
+  const fora = [...guild.channels.cache.values()].filter((c) => !usados.has(c.id) && !canais.has(c.id) && c.deletable);
+  for (const c of fora.sort((a, b) => (a.type === ChannelType.GuildCategory) - (b.type === ChannelType.GuildCategory))) {
+    if (c.type === ChannelType.GuildCategory && guild.channels.cache.some((x) => x.parentId === c.id && canais.has(x.id))) continue;
+    t.passo = `Apagando #${c.name}`;
+    await c.delete('Montar servidor: fora do modelo').then(() => nCanais++, () => {});
+  }
+  for (const r of guild.roles.cache.values()) {
+    if (r.id === guild.id || r.managed || !r.editable || cargosDoModelo.has(r.id) || cargos.has(r.id) || lerSeparador(r.name) !== null || r.name === NOME_CARGO_NIVER) continue;
+    t.passo = `Apagando @${r.name}`;
+    await r.delete('Montar servidor: fora do modelo').then(() => nCargos++, () => {});
+  }
+  t.rel.push(`Apagados fora do modelo: ${nCanais} canal(is) e ${nCargos} cargo(s). Ficaram os canais e cargos que o bot usa, os de cor, separadores e integrações.`);
+}
+
+/** "Renomear o que já existe": aplica as fontes da aba em tudo que tem nome do modelo (de qualquer categoria) */
+async function renomearServidor(guild, t) {
+  const srv = dados.config().srv;
+  await guild.channels.fetch();
+  const alvos = [];
+  for (const [, nome, emoji, canais] of CATS_SRV) {
+    for (const c of guild.channels.cache.filter((x) => x.type === ChannelType.GuildCategory && chave(x.name) === chave(nome)).values()) alvos.push([c, formatarNome('categorias', nome, emoji, false, srv.f.categorias)]);
+    for (const [tipo, n, e] of canais) {
+      const voz = tipo === 'v';
+      for (const c of guild.channels.cache.filter((x) => x.type === (voz ? ChannelType.GuildVoice : ChannelType.GuildText) && chave(x.name) === chave(n)).values()) alvos.push([c, formatarNome('canais', n, e, voz, srv.f.canais)]);
+    }
+  }
+  for (const [nome, , emoji] of CARGOS_SRV) for (const r of guild.roles.cache.filter((x) => !x.managed && x.id !== guild.id && chave(x.name) === chave(nome)).values()) alvos.push([r, formatarNome('cargos', nome, emoji, false, srv.f.cargos)]);
+  const mudar = alvos.filter(([x, nome]) => x.name !== nome);
+  t.total = mudar.length;
+  let feitos = 0, travados = 0;
+  for (const [x, nome] of mudar) {
+    t.passo = `${x.name} → ${nome}`;
+    if ('editable' in x && !x.editable) travados++;
+    else await x.setName(nome, 'Fontes e nomes').then(() => feitos++, () => travados++);
+    t.feitos++;
+  }
+  t.rel.push(`${feitos} nome(s) trocado(s)${travados ? `; ${travados} sem permissão pra mudar (acima do cargo do bot)` : ''}. ${alvos.length - mudar.length} já estavam certos.`);
+}
+
 // ---------- Regras ----------
 const hojeTxt = () => {
   const h = hojeNoBrasil();
@@ -2146,6 +2407,8 @@ export const api = {
       ocorrencias: guild ? lerOcorrencias().slice(0, 100) : [],
       tickets: guild ? filaDeTickets(guild) : [],
       regrasMsg: guild ? mensagemDasRegras(guild) : null,
+      obra,
+      srvMontado: lerRegistro().srvMontado ?? null,
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -2342,6 +2605,20 @@ export const api = {
       throw comStatus(400, explicarErro(erro));
     }
   },
+
+  // Aba Servidor (só quem gerencia o servidor): a config já foi salva antes; a obra roda em segundo plano
+  montarServidor() {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    if (!dados.config().srv.cats.length) throw comStatus(400, 'Escolhe pelo menos uma categoria.');
+    return { obra: comecarObra('montar', (t) => montarServidor(guild, t)) };
+  },
+  renomearServidor() {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    return { obra: comecarObra('renomear', (t) => renomearServidor(guild, t)) };
+  },
+  andamentoServidor: () => ({ obra, montado: lerRegistro().srvMontado ?? null }),
 
   // Aba Regras: "Enviar no #canal" / "Atualizar mensagem" (a config já foi salva antes)
   async enviarRegras() {

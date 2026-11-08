@@ -5,6 +5,7 @@ import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PALAVROES } from './lib/automod.js';
 import { LIMITES as LIM_REGRAS, MAX_REGRAS, PADRAO_REGRAS } from './lib/regras.js';
+import { normalizarSrv, PADRAO_SRV } from './lib/servidor.js';
 
 // DADOS_PASTA troca a pasta (os testes usam uma temporária)
 const PASTA = process.env.DADOS_PASTA ? pathToFileURL(resolve(process.env.DADOS_PASTA) + sep) : new URL('./dados/', import.meta.url);
@@ -107,6 +108,8 @@ PADRAO.tickets = {
 // Regras (lib/regras.js): mensagem no canal que o bot edita, botão "Li e aceito" com cargo e /regras.
 // canalId 'novo' e cargoId 'novo' = o bot cria ao salvar.
 PADRAO.regras = PADRAO_REGRAS;
+// Aba Servidor (lib/servidor.js): modelo, categorias, opções e as fontes dos nomes
+PADRAO.srv = PADRAO_SRV;
 export const PARADOS = ['12h', '24h', '48h', 'nunca'];
 export const APAGARES = ['agora', '5s', '10s', '1min', '5min'];
 export const MAX_MOTIVOS = 25; // limite de opções do menu do Discord
@@ -403,6 +406,8 @@ const SECOES = {
       cmd: sim(r.cmd, p.cmd),
     };
   },
+
+  srv: (bruto) => normalizarSrv(bruto),
 };
 
 /**

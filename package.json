@@ -1,6 +1,6 @@
 {
   "name": "manda-chuva-bot",
-  "version": "3.17.0",
+  "version": "3.18.0",
   "description": "Bot Manda Chuva para Discord: cores de nome, portaria, temas, aniversários e moderação, com API para a interface web",
   "private": true,
   "type": "module",
