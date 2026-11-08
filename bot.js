@@ -1887,7 +1887,8 @@ export const api = {
       bot: user
         ? { online: true, soPainel, versao: VERSAO, recursos, nome: user.username, avatar: user.displayAvatarURL({ size: 64 }), convite: linkConvite() }
         : { online: false, soPainel, versao: VERSAO, recursos },
-      servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name })) : [],
+      // icone: null quando o servidor não tem ícone (o painel mostra a sigla, como o Discord)
+      servidores: user ? client.guilds.cache.map((g) => ({ id: g.id, nome: g.name, icone: g.iconURL({ size: 64 }), sigla: g.nameAcronym })) : [],
       servidor: guild ? infoServidor(guild) : null,
       noticias: NOVIDADES,
       aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
