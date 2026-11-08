@@ -330,3 +330,8 @@ test('destaque que some no fundo vira a cor do texto', async () => {
   assert.equal(corDeDestaque({ fundo: '#F3D48A', destaque: '#F2C14E' }), '#1B1F33');
   assert.equal(corDeDestaque({ fundo: '#1F2A5C', destaque: '#F2C14E' }), '#F2C14E');
 });
+
+test('vermelho no azul-marinho tem pouco contraste: o rótulo vira a cor do texto', async () => {
+  const { corDeDestaque } = await import('../lib/aparencia.js');
+  assert.equal(corDeDestaque({ fundo: '#1F2A5C', destaque: '#C4363C' }), '#FFFCF4');
+});
