@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import omggif from 'omggif';
-import { desenharCarteirinha, nomeDoArquivo, tempoDeCasa, textoDesenhavel } from '../lib/carteirinha.js';
+import { desenharCarteirinha, desenharFicha, nomeDoArquivo, tempoDeCasa, textoDesenhavel } from '../lib/carteirinha.js';
 import { AZUL, fazerGif, VERDE, VERMELHO } from './ajuda-gif.js';
 
 const { GifReader } = omggif;
@@ -250,4 +250,30 @@ test('muita gente ao mesmo tempo: GIF um por vez, quem sobra recebe PNG', async 
   assert.deepEqual(r.map((x) => x.ext), ['gif', 'gif', 'gif', 'png', 'png']);
   // A fila anda: depois de esvaziar, volta a sair GIF
   assert.equal((await desenharCarteirinha(d)).ext, 'gif');
+});
+
+// ---------- Ficha (/perfil completo, /trofeus, /aniversario ver) ----------
+const FICHA = {
+  banner: pngLiso('#3498db', 400, 120), avatar: pngLiso('#2ecc71', 100, 100), nome: 'Pedrinho', usuario: 'pedrinho', entrou: 'entrou há 3 meses',
+  medalhas: [], cargos: [{ nome: 'Azul', cor: '#3498DB' }], stats: [['1', 'mensagens'], ['0 h', 'em call'], ['2', 'medalhas']], rodape: 'SERVIDOR DOS CRIA · CARTEIRINHA',
+};
+
+test('ficha completa: carteirinha em cima, aniversário e troféus embaixo, no fundo escolhido', async () => {
+  const png = await desenharFicha({ ...FICHA, ap: { fundo: '#1F2A5C' }, niver: '14/05 · 22 anos', trofeus: { imgs: [pngLiso('#f2c14e', 64, 64), pngLiso('#c4363c', 64, 64)], total: 16 } }, { tipo: 'completo' });
+  const [l, a] = tamanhoPng(png);
+  assert.equal(l, 1000);
+  assert.ok(a > 560, `altura ${a}`);
+  assert.equal(await corEm(png, 500, 100), '#3498db'); // banner
+  assert.equal(await corEm(png, 990, a - 60), '#1f2a5c'); // fundo até o fim
+});
+
+test('ficha com título: sem banner, mais baixa, e cresce com mais troféus', async () => {
+  const um = await desenharFicha({ ...FICHA, trofeus: { imgs: [pngLiso('#f2c14e', 64, 64)], total: 16 } }, { tipo: 'titulo', titulo: 'TROFÉUS' });
+  const muitos = await desenharFicha({ ...FICHA, trofeus: { imgs: Array.from({ length: 16 }, () => pngLiso('#f2c14e', 64, 64)), total: 16 } }, { tipo: 'titulo', titulo: 'TROFÉUS' });
+  const [l1, a1] = tamanhoPng(um), [, a2] = tamanhoPng(muitos);
+  assert.equal(l1, 1000);
+  assert.ok(a1 < 560 && a2 > a1, `${a1} → ${a2}`);
+  assert.equal(await corEm(um, 990, 10), '#fffcf4'); // fundo padrão, sem banner
+  const niver = await desenharFicha({ ...FICHA, niver: 'Escondido pelo dono do perfil.' }, { tipo: 'titulo', titulo: 'ANIVERSÁRIO' });
+  assert.ok(tamanhoPng(niver)[1] < a1);
 });

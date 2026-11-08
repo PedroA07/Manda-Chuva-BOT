@@ -321,3 +321,12 @@ test('aniversário no perfil: escondido, só dia e mês ou com a idade', () => {
   assert.equal(textoDoAniversario({ d: '14/05', ano: 2004 }, 'oculto', hoje), null);
   assert.equal(textoDoAniversario(null, 'idade', hoje), null);
 });
+
+test('destaque que some no fundo vira a cor do texto', async () => {
+  const { corDeDestaque } = await import('../lib/aparencia.js');
+  assert.equal(corDeDestaque({ fundo: '#FFFCF4', destaque: '#C4363C' }), '#C4363C');
+  assert.equal(corDeDestaque({ fundo: '#1F2A5C', destaque: '#1F2A5C' }), '#FFFCF4');
+  assert.equal(corDeDestaque({ fundo: '#1B1F33', destaque: '#1F2A5C' }), '#FFFCF4');
+  assert.equal(corDeDestaque({ fundo: '#F3D48A', destaque: '#F2C14E' }), '#1B1F33');
+  assert.equal(corDeDestaque({ fundo: '#1F2A5C', destaque: '#F2C14E' }), '#F2C14E');
+});

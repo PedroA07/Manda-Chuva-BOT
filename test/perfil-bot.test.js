@@ -130,7 +130,7 @@ async function comandoPerfil(guild, id) {
   await responderPerfil({
     guild,
     user: client.users.cache.get(id),
-    options: { getUser: () => null },
+    options: { getUser: () => null, getBoolean: () => null },
     deferReply: async () => passos.push('esperando'),
     reply: async (r) => passos.push(r),
     editReply: async (r) => passos.push(r),
@@ -164,7 +164,7 @@ test('/perfil: se o desenho falhar, a pessoa recebe os dados em texto', async ()
   await responderPerfil({
     guild,
     user: client.users.cache.get(PEDRO),
-    options: { getUser: () => null },
+    options: { getUser: () => null, getBoolean: () => null },
     deferReply: async () => {},
     editReply: async (r) => {
       editou.push(r);
@@ -322,4 +322,22 @@ test('imagem de link só sai do perfil salvo: sem link, nada', async () => {
   ligarDiscordFalso();
   assert.equal(await api.imagemDoPerfil(PEDRO, 'banner'), null);
   assert.equal(await api.imagemDoPerfil('999999999999999999', 'foto'), null);
+});
+
+test('/perfil completo responde com a ficha em PNG, mais comprida que a carteirinha', async () => {
+  const guild = ligarDiscordFalso();
+  const passos = [];
+  await responderPerfil({
+    guild,
+    user: client.users.cache.get(PEDRO),
+    options: { getUser: () => null, getBoolean: (k) => (k === 'completo' ? true : null) },
+    deferReply: async () => passos.push('esperando'),
+    reply: async (r) => passos.push(r),
+    editReply: async (r) => passos.push(r),
+  });
+  assert.equal(passos[0], 'esperando');
+  const [arquivo] = passos[1].files;
+  assert.equal(arquivo.name, 'perfil-pedro.png');
+  assert.equal(arquivo.attachment.readUInt32BE(16), 1000);
+  assert.ok(arquivo.attachment.readUInt32BE(20) > 560);
 });

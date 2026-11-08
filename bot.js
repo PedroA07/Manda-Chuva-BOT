@@ -22,7 +22,7 @@ import { extDoAnexo, lerAnexo, limparAnexos, podeEnviar, refsDeAnexo, salvarAnex
 import { contarSpam, NATIVAS, NOMES, oqueDoAutomod, regraDoDiscord } from './lib/automod.js';
 import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvarAniversario, textoDoNiver, tirarAniversario } from './lib/aniversarios.js';
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
-import { desenharCarteirinha, nomeDoArquivo, tempoDeCasa } from './lib/carteirinha.js';
+import { desenharCarteirinha, desenharFicha, nomeDoArquivo, tempoDeCasa } from './lib/carteirinha.js';
 import { conectar } from './lib/conexao.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
@@ -190,16 +190,20 @@ async function responderInteracao(interacao) {
     privacidade: responderPrivacidade,
     painel: responderPainel,
     regras: responderRegras,
+    trofeus: (i) => responderFicha(i, 'trofeus'),
   }[interacao.commandName];
   if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
   if (interacao.isButton() && interacao.customId === 'niver:cadastrar') return interacao.showModal(formularioNiver()).catch((erro) => console.error('Formulário:', erro.message));
   const niverForm = interacao.isModalSubmit() && interacao.customId === 'niver:modal';
+  // /aniversario-apagar e o /aniversario sem subcomando são da versão antiga (cliente com o comando velho em cache)
   const niverCmd = interacao.isChatInputCommand() && ['aniversario', 'aniversario-apagar'].includes(interacao.commandName);
+  const sub = niverCmd && interacao.commandName === 'aniversario' ? interacao.options.getSubcommand(false) : null;
+  if (sub === 'ver') return responderFicha(interacao, 'niver').catch((erro) => console.error('/aniversario ver:', erro));
   if (niverForm || niverCmd) {
     try {
       await interacao.deferReply({ flags: MessageFlags.Ephemeral });
-      if (niverCmd && interacao.commandName === 'aniversario-apagar') {
+      if (sub === 'apagar' || (niverCmd && interacao.commandName === 'aniversario-apagar')) {
         await tirarAniversario(interacao.user.id);
         await interacao.editReply('Tirei seu aniversário da lista.');
       } else {
@@ -305,15 +309,21 @@ export function comandos(cfg = dados.config()) {
         o.setName('cor').setDescription('Qual cor?').setRequired(true).addChoices(...escolhas, { name: '❌ Tirar a cor', value: REMOVER }),
       )
       .toJSON(),
-    // Data em blocos: dia DD, mês MM e ano AAAA (opcional)
+    // Data em blocos: dia DD, mês MM e ano AAAA (opcional). "ver" responde com imagem, do jeito que a pessoa deixou ver.
     new SlashCommandBuilder()
       .setName('aniversario')
-      .setDescription('Cadastra o seu aniversário: dia, mês e ano (o ano é opcional)')
-      .addIntegerOption((o) => o.setName('dia').setDescription('Dia em que você nasceu (DD), tipo 14').setRequired(true).setMinValue(1).setMaxValue(31))
-      .addIntegerOption((o) => o.setName('mes').setDescription('Mês (MM), tipo 05').setRequired(true).setMinValue(1).setMaxValue(12))
-      .addIntegerOption((o) => o.setName('ano').setDescription('Ano (AAAA), tipo 2003. Opcional: sem ano a mensagem sai sem idade').setMinValue(1900).setMaxValue(hojeNoBrasil().ano))
+      .setDescription('Seu aniversário: cadastrar, ver ou apagar')
+      .addSubcommand((s) =>
+        s
+          .setName('cadastrar')
+          .setDescription('Cadastra o seu aniversário: dia, mês e ano (o ano é opcional)')
+          .addIntegerOption((o) => o.setName('dia').setDescription('Dia em que você nasceu (DD), tipo 14').setRequired(true).setMinValue(1).setMaxValue(31))
+          .addIntegerOption((o) => o.setName('mes').setDescription('Mês (MM), tipo 05').setRequired(true).setMinValue(1).setMaxValue(12))
+          .addIntegerOption((o) => o.setName('ano').setDescription('Ano (AAAA), tipo 2003. Opcional: sem ano a mensagem sai sem idade').setMinValue(1900).setMaxValue(hojeNoBrasil().ano)),
+      )
+      .addSubcommand((s) => s.setName('ver').setDescription('Mostra o aniversário (se a pessoa deixou ver)').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')))
+      .addSubcommand((s) => s.setName('apagar').setDescription('Tira o seu aniversário da lista'))
       .toJSON(),
-    new SlashCommandBuilder().setName('aniversario-apagar').setDescription('Tira o seu aniversário da lista').toJSON(),
     comandoTicket(cfg),
     new SlashCommandBuilder()
       .setName('medalha')
@@ -322,7 +332,13 @@ export function comandos(cfg = dados.config()) {
       .addStringOption((o) => o.setName('medalha').setDescription('Qual medalha').setRequired(true).addChoices(...MEDALHAS.filter((m) => DE_EVENTO.includes(m.id)).map((m) => ({ name: m.nome, value: m.id }))))
       .addIntegerOption((o) => o.setName('quantidade').setDescription('Quantas vezes (negativo tira; padrão 1)').setMinValue(-10).setMaxValue(10))
       .toJSON(),
-    new SlashCommandBuilder().setName('perfil').setDescription('Mostra a carteirinha com banner, foto e medalhas').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder()
+      .setName('perfil')
+      .setDescription('Mostra a carteirinha com banner, foto e medalhas')
+      .addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)'))
+      .addBooleanOption((o) => o.setName('completo').setDescription('Tudo: aniversário e troféus (só o que a pessoa deixou ver)'))
+      .toJSON(),
+    new SlashCommandBuilder().setName('trofeus').setDescription('Medalhas e troféus do servidor, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
     new SlashCommandBuilder()
       .setName('painel')
@@ -802,7 +818,7 @@ async function cadastrarNiver(interacao, blocos) {
   const lida = lerDataEmBlocos(blocos, hojeNoBrasil());
   if (lida.erro) return interacao.editReply(`⚠️ ${lida.erro}`);
   await salvarAniversario({ userId: interacao.user.id, nome: interacao.member.displayName, d: lida.d, ano: lida.ano });
-  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Pra tirar: \`/aniversario-apagar\`.`);
+  return interacao.editReply(`Anotado! Seu aniversário é ${lida.d}${lida.ano ? `/${lida.ano}` : ''}. 🎂 Quem vê no perfil você escolhe em Meu perfil, no site. Pra tirar: \`/aniversario apagar\`.`);
 }
 
 const formularioNiver = () =>
@@ -1811,7 +1827,58 @@ function perfilEmTexto(m) {
 }
 
 /** /perfil [membro]: a carteirinha desenhada, como imagem anexada (GIF se o banner ou a foto for animado) */
+/** Aniversário na ficha: do jeito que a pessoa deixou ver */
+function aniversarioDaFicha(m) {
+  const registro = lerAniversarios().find((x) => x.userId === m.id);
+  if (!registro) return 'Ainda não cadastrou (é com /aniversario cadastrar).';
+  return textoDoAniversario(registro, perfilDe(m.id).niverVis, hojeNoBrasil()) ?? 'Escondido pelo dono do perfil.';
+}
+
+/** Medalhas ganhas, em imagem, pra ficha */
+async function trofeusDe(m) {
+  const ganhas = medalhasDoMembro(m).filter((x) => x.ganha);
+  const imgs = await Promise.all(ganhas.map((x) => baixarImagem(midia(`banners/medalhas/${x.id}.png`).url)));
+  return { imgs: imgs.filter(Boolean), ganhas: ganhas.length, total: MEDALHAS.length };
+}
+
+/** Só o que a ficha com título usa: foto, nome, aparência e rodapé */
+async function dadosDoCabecalho(m) {
+  const p = perfilDe(m.id);
+  return {
+    avatar: (await arquivoDoPerfil(p, 'a')) ?? (await baixarImagem(fotoDoDiscord(m))),
+    nome: m.displayName, usuario: m.user.username, ap: p.ap,
+    rodape: `${m.guild.name.toUpperCase()} · CARTEIRINHA`,
+  };
+}
+
+const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niver: ['aniversario', 'ANIVERSÁRIO'] };
+
+/** /perfil completo, /trofeus e /aniversario ver: ficha em imagem de alguém (padrão: quem pediu) */
+async function responderFicha(i, tipo) {
+  const alvo = i.options.getUser('membro') ?? i.user;
+  const m = await i.guild.members.fetch(alvo.id).catch(() => null);
+  if (!m) return void (await i.reply(efemero({ content: 'Essa pessoa não está no servidor.' })));
+  if (m.user.bot) return void (await i.reply(efemero({ content: 'Bot não tem ficha (nem eu, infelizmente).' })));
+  await i.deferReply();
+  const [prefixo, titulo] = FICHAS[tipo];
+  const completo = tipo === 'completo';
+  // Sem imagem (canvas ou download falhou): responde em texto, sem deixar o "pensando…" pendurado
+  const emTexto = () => [completo ? perfilEmTexto(m) : `**${m.displayName}**`, tipo !== 'trofeus' && `🎂 ${aniversarioDaFicha(m)}`, tipo !== 'niver' && `🏅 ${medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.nome).join(', ')}`].filter(Boolean).join('\n');
+  try {
+    const d = completo ? await dadosDaCarteirinha(m) : await dadosDoCabecalho(m);
+    if (completo || tipo === 'niver') d.niver = aniversarioDaFicha(m);
+    if (completo || tipo === 'trofeus') d.trofeus = await trofeusDe(m);
+    const png = await desenharFicha(d, { tipo: completo ? 'completo' : 'titulo', titulo });
+    if (!png) throw new Error('o canvas não carregou');
+    await i.editReply({ files: [{ attachment: png, name: nomeDoArquivo(m.displayName, 'png').replace(/^perfil-/, `${prefixo}-`) }] });
+  } catch (erro) {
+    console.error('Ficha:', erro.message);
+    await i.editReply({ content: emTexto(), allowedMentions: { parse: [] } }).catch(() => {});
+  }
+}
+
 export async function responderPerfil(i) {
+  if (i.options.getBoolean('completo')) return responderFicha(i, 'completo');
   const alvo = i.options.getUser('membro') ?? i.user;
   const m = await i.guild.members.fetch(alvo.id).catch(() => null);
   if (!m) return void (await i.reply(efemero({ content: 'Essa pessoa não está no servidor.' })));
