@@ -36,6 +36,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/medalhas': ['staff', (corpo) => api.darMedalha(corpo)],
     'POST /api/ocorrencias/desfazer': ['staff', (corpo) => api.desfazer(corpo)],
     'POST /api/tickets/acao': ['staff', (corpo, _, quem) => api.ticketAcao(corpo, quem)],
+    'POST /api/regras/enviar': ['staff', () => api.enviarRegras()],
   };
   // Imagem em base64 (até 8 MB) fica maior que o limite normal
   const limites = { 'POST /api/anexo': 12_000_000, 'POST /api/eu/anexo': 12_000_000 };

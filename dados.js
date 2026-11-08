@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node
 import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PALAVROES } from './lib/automod.js';
+import { LIMITES as LIM_REGRAS, MAX_REGRAS, PADRAO_REGRAS } from './lib/regras.js';
 
 // DADOS_PASTA troca a pasta (os testes usam uma temporária)
 const PASTA = process.env.DADOS_PASTA ? pathToFileURL(resolve(process.env.DADOS_PASTA) + sep) : new URL('./dados/', import.meta.url);
@@ -103,6 +104,9 @@ PADRAO.tickets = {
     ['🤝', 'Parceria', 'Divulgação, eventos, collab'], ['🐛', 'Bug do bot', 'O Manda Chuva fez besteira'], ['🎨', 'Cargo', 'Pedir ou trocar um cargo'],
   ].map(([emoji, nome, desc]) => ({ emoji, nome, desc, on: true })),
 };
+// Regras (lib/regras.js): mensagem no canal que o bot edita, botão "Li e aceito" com cargo e /regras.
+// canalId 'novo' e cargoId 'novo' = o bot cria ao salvar.
+PADRAO.regras = PADRAO_REGRAS;
 export const PARADOS = ['12h', '24h', '48h', 'nunca'];
 export const APAGARES = ['agora', '5s', '10s', '1min', '5min'];
 export const MAX_MOTIVOS = 25; // limite de opções do menu do Discord
@@ -375,6 +379,28 @@ const SECOES = {
       desc: typeof t.desc === 'string' ? txt(t.desc, 1500) : p.desc,
       imagem: imagem(t.imagem, 'Imagem do painel de tickets', erros),
       motivos: motivos.slice(0, MAX_MOTIVOS),
+    };
+  },
+
+  regras(bruto, _atual, erros) {
+    const r = obj(bruto), p = PADRAO.regras;
+    const sim = (v, padrao) => (typeof v === 'boolean' ? v : padrao);
+    const id = (v) => (v === 'novo' || (typeof v === 'string' && ID.test(v)) ? v : null);
+    const lista = (Array.isArray(r.regras) ? r.regras : p.regras).map(obj).map((x) => ({ t: txt(x.t, LIM_REGRAS.regra), d: txt(x.d, LIM_REGRAS.explicacao) }));
+    if (lista.length > MAX_REGRAS) erros.push(`Regras: até ${MAX_REGRAS} regras (ninguém lê mais que isso).`);
+    return {
+      canalId: id(r.canalId),
+      cor: typeof r.cor === 'string' && HEX.test(r.cor.trim()) ? hex(r.cor) : p.cor,
+      titulo: typeof r.titulo === 'string' ? txt(r.titulo, LIM_REGRAS.titulo) : p.titulo,
+      intro: typeof r.intro === 'string' ? txt(r.intro, LIM_REGRAS.intro) : p.intro,
+      banner: imagem(r.banner, 'Imagem do topo das regras', erros),
+      regras: lista.slice(0, MAX_REGRAS),
+      escada: sim(r.escada, p.escada),
+      botao: sim(r.botao, p.botao),
+      botaoTxt: txt(r.botaoTxt, LIM_REGRAS.botao) || p.botaoTxt,
+      cargoId: id(r.cargoId),
+      fixar: sim(r.fixar, p.fixar),
+      cmd: sim(r.cmd, p.cmd),
     };
   },
 };

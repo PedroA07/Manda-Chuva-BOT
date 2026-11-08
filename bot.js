@@ -1,4 +1,5 @@
 // Lógica do bot: cargos de cor, botões, comando /cor e as ações usadas pelo painel web
+import { createHash } from 'node:crypto';
 import {
   AutoModerationActionType,
   ChannelType,
@@ -36,6 +37,7 @@ import { corDoBotao, errosDoPainel, pedacoDoPainel, REMOVER } from './lib/painel
 import { eventoDaPlaca, placaPronta } from './lib/placa.js';
 import { duracaoTexto, pedacoDoEvento, preencher } from './lib/portaria.js';
 import { lerRegistro, salvarRegistro } from './lib/registro.js';
+import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
 import { apagarPerfil, DE_EVENTO, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, visualDoPerfil } from './lib/perfil.js';
@@ -62,7 +64,9 @@ const NOMES_MODERACAO = [
 ];
 // Tickets: criar e apagar os canais privados
 const NOMES_TICKETS = [[P.ManageChannels, 'Gerenciar canais (tickets)']];
-export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO, ...NOMES_TICKETS].map(([p]) => p);
+// Regras: fixar a mensagem no canal (desde 2026 o Discord separou do "Gerenciar mensagens")
+const NOMES_REGRAS = [[P.PinMessages, 'Fixar mensagens (regras)']];
+export const PERMISSOES = [...NOMES_PERMISSOES, ...NOMES_MODERACAO, ...NOMES_TICKETS, ...NOMES_REGRAS].map(([p]) => p);
 
 // Cargo com qualquer uma dessas permissões nunca é dado por botão (evita alguém virar admin sem querer)
 const PERIGOSAS = [P.Administrator, P.ManageGuild, P.ManageRoles, P.ManageChannels, P.ManageMessages,
@@ -178,12 +182,14 @@ async function responderInteracao(interacao) {
   if (ehDeTicket(interacao)) return responderTicket(interacao).catch((erro) => console.error('Ticket:', erro));
   if (interacao.isChatInputCommand() && interacao.commandName === 'medalha') return responderMedalha(interacao);
   if (interacao.isButton() && interacao.customId.startsWith('priv:apagar:')) return apagarMeusDados(interacao).catch((erro) => console.error('Privacidade:', erro));
+  if (interacao.isButton() && interacao.customId === ID_ACEITO) return aceitarRegras(interacao);
   const outro = interacao.isChatInputCommand() && {
     perfil: responderPerfil,
     medalhas: responderMedalhas,
     tema: responderTema,
     privacidade: responderPrivacidade,
     painel: responderPainel,
+    regras: responderRegras,
   }[interacao.commandName];
   if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
@@ -334,6 +340,8 @@ export function comandos(cfg = dados.config()) {
       .addSubcommand((s) => s.setName('ver').setDescription('Mostra o que o bot guarda de você'))
       .addSubcommand((s) => s.setName('apagar').setDescription('Apaga seu aniversário, perfil e medalhas'))
       .toJSON(),
+    // /regras só aparece depois que a staff publica as regras (e se deixou ligado)
+    ...(cfg.regras.cmd && lerRegistro().regrasMsg ? [new SlashCommandBuilder().setName('regras').setDescription('Mostra as regras do servidor (só pra você)').toJSON()] : []),
   ];
 }
 
@@ -1016,6 +1024,7 @@ function infoServidor(guild) {
     permissoesFaltando: NOMES_PERMISSOES.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     moderacaoFaltando: NOMES_MODERACAO.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     ticketsFaltando: NOMES_TICKETS.filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
+    regrasFaltando: [...NOMES_REGRAS, [P.ManageRoles, 'Gerenciar cargos (botão de aceitar)']].filter(([p]) => !eu?.permissions.has(p)).map(([, nome]) => nome),
     categorias: guild.channels.cache.filter((c) => c.type === ChannelType.GuildCategory).sort((a, b) => a.rawPosition - b.rawPosition).map((c) => ({ id: c.id, nome: c.name })),
     hierarquia: {
       cargoDoBot: eu?.roles.highest.name ?? '?',
@@ -1203,6 +1212,139 @@ async function publicarPainelTickets(guild, rel, cfg = dados.config()) {
   } catch (erro) {
     rel.push(`⚠️ Não consegui pôr o painel de tickets em #${canal.name}: ${explicarErro(erro)}`);
   }
+}
+
+// ---------- Regras ----------
+const hojeTxt = () => {
+  const h = hojeNoBrasil();
+  return `${String(h.dia).padStart(2, '0')}/${String(h.mes).padStart(2, '0')}/${h.ano}`;
+};
+
+/** Mensagem das regras (com o botão de aceitar, se ligado). @param {import('discord.js').Guild} guild */
+async function montarRegras(guild, cfg = dados.config(), { comBotao = true } = {}) {
+  const r = cfg.regras;
+  const { url, arquivos } = await imagensDaMensagem({ banner: r.banner }, guild);
+  return montarV2({ ...pedacoDasRegras(r, { servidor: guild.name, hoje: hojeTxt(), url, moderacao: cfg.moderacao, comBotao }), arquivos: arquivos() });
+}
+
+// O que muda a mensagem: se nada mudou, o Salvar não edita (e o "atualizado em" continua valendo)
+const assinaturaDasRegras = (guild, cfg) =>
+  createHash('sha1').update(JSON.stringify([cfg.regras, cfg.regras.escada && escadaDePunicoes(cfg.moderacao), guild.name])).digest('hex');
+
+/** Salvar: cria o canal e o cargo das regras se pediram "Criar" */
+async function prepararRegras(guild, cfg, rel) {
+  const r = cfg.regras;
+  if (r.canalId === 'novo') {
+    try {
+      // Todo mundo lê, só o bot escreve
+      const canal = await guild.channels.create({
+        name: 'regras',
+        type: ChannelType.GuildText,
+        permissionOverwrites: [
+          { id: guild.id, deny: [P.SendMessages, P.CreatePublicThreads, P.CreatePrivateThreads] },
+          { id: client.user.id, allow: [P.ViewChannel, P.SendMessages, P.EmbedLinks, P.AttachFiles, P.ReadMessageHistory] },
+        ],
+        reason: 'Aba Regras do painel',
+      });
+      r.canalId = canal.id;
+      rel.push(`Criei o canal #${canal.name} pras regras.`);
+    } catch (erro) {
+      r.canalId = null;
+      rel.push(`⚠️ Não consegui criar o canal das regras: ${explicarErro(erro)}`);
+    }
+  }
+  if (r.cargoId === 'novo') {
+    try {
+      const ja = guild.roles.cache.find((x) => x.name.toLowerCase() === 'verificado' && x.id !== guild.id && !x.managed);
+      const cargo = ja ?? (await guild.roles.create({ name: 'Verificado', colors: { primaryColor: 0x2ecc71 }, permissions: [], reason: 'Botão de aceitar as regras' }));
+      r.cargoId = cargo.id;
+      rel.push(ja ? `O botão das regras vai dar o cargo ${cargo.name}, que já existia.` : 'Criei o cargo Verificado pro botão das regras.');
+    } catch (erro) {
+      r.cargoId = null;
+      rel.push(`⚠️ Não consegui criar o cargo Verificado: ${explicarErro(erro)}`);
+    }
+  }
+}
+
+/**
+ * Põe (ou atualiza) a mensagem das regras e guarda onde ficou.
+ * forcar = botão Enviar/Atualizar do painel: sem ele (Salvar), só edita a que já existe e só se algo mudou.
+ * @param {import('discord.js').Guild} guild
+ */
+async function publicarRegras(guild, rel, cfg = dados.config(), { forcar = false } = {}) {
+  const r = cfg.regras;
+  const atual = lerRegistro().regrasMsg;
+  const assinatura = assinaturaDasRegras(guild, cfg);
+  if (!forcar && (!atual || (atual.assinatura === assinatura && atual.canalId === r.canalId))) return null;
+  const problema = (texto) => {
+    if (forcar) throw comStatus(400, texto);
+    rel.push(`⚠️ ${texto}`);
+    return null;
+  };
+  const canal = r.canalId ? guild.channels.cache.get(r.canalId) : null;
+  if (!canal?.isTextBased()) return problema(r.canalId ? 'O canal das regras não existe mais. Escolha outro.' : 'Escolha o canal das regras.');
+  if (!temRegras(r)) return problema('Escreva pelo menos uma regra (com título).');
+  const cargo = r.botao && r.cargoId ? guild.roles.cache.get(r.cargoId) : null;
+  if (r.botao && !cargo) rel.push('⚠️ O botão de aceitar está sem cargo: escolha o cargo que ele dá.');
+  else if (cargo && ehPerigoso(cargo)) rel.push(`⚠️ Por segurança o botão não dá "${cargo.name}" (tem permissões de moderação/admin). Escolha outro cargo.`);
+  else if (cargo && !cargo.editable) rel.push(`⚠️ O cargo "${cargo.name}" está acima do cargo do bot: o botão só funciona se o cargo do bot ficar acima dele.`);
+  try {
+    const msg = await montarRegras(guild, cfg);
+    let feita = null;
+    if (atual?.canalId === canal.id) {
+      feita = await canal.messages.edit(atual.mensagemId, { ...msg, attachments: [] }).catch((erro) => {
+        if ([10003, 10008].includes(erro.code)) return null;
+        throw erro;
+      });
+    }
+    const nova = !feita;
+    if (nova) {
+      feita = await canal.send(msg);
+      if (atual && atual.canalId !== canal.id) await guild.channels.cache.get(atual.canalId)?.messages?.delete(atual.mensagemId).catch(() => {});
+    }
+    if (r.fixar && !feita.pinned) await feita.pin('Regras do servidor').catch(() => rel.push(`⚠️ Não consegui fixar as regras: falta a permissão "Fixar mensagens" pro bot em #${canal.name}.`));
+    if (!r.fixar && feita.pinned) await feita.unpin('Regras sem fixar').catch(() => {});
+    await salvarRegistro({ regrasMsg: { canalId: canal.id, mensagemId: feita.id, quando: Date.now(), fixada: r.fixar, assinatura } });
+    rel.push(nova ? `Regras enviadas em #${canal.name}.` : `Mensagem das regras atualizada em #${canal.name}.`);
+    return feita;
+  } catch (erro) {
+    return problema(`Não consegui pôr as regras em #${canal.name}: ${explicarErro(erro)}`);
+  }
+}
+
+/** Onde está a mensagem das regras, pro painel ("Enviada em … · fixada" e o link) */
+function mensagemDasRegras(guild) {
+  const m = lerRegistro().regrasMsg;
+  if (!m) return null;
+  return { quando: m.quando, fixada: !!m.fixada, canalNome: guild.channels.cache.get(m.canalId)?.name ?? null, link: `https://discord.com/channels/${guild.id}/${m.canalId}/${m.mensagemId}` };
+}
+
+/** Botão "Li e aceito": dá o cargo das regras (só pra quem clicou) */
+async function aceitarRegras(i) {
+  try {
+    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    const r = dados.config().regras;
+    const cargo = r.botao && r.cargoId ? i.guild.roles.cache.get(r.cargoId) : null;
+    if (!cargo) return void (await i.editReply('Esse botão está sem cargo agora. Avisa a staff (ou abre um ticket).'));
+    const sem = { allowedMentions: { parse: [] } };
+    if (i.member.roles.cache.has(cargo.id)) return void (await i.editReply({ content: `Você já aceitou as regras e tem o cargo <@&${cargo.id}>. Pode ir pra resenha!`, ...sem }));
+    if (ehPerigoso(cargo) || !cargo.editable) return void (await i.editReply('Não consigo te dar o cargo das regras agora (ele está acima do meu cargo). Avisa a staff.'));
+    await i.member.roles.add(cargo, 'Aceitou as regras');
+    await i.editReply({ content: `✅ Regras aceitas! Agora você tem o cargo <@&${cargo.id}>. Bem-vindo(a) à resenha.`, ...sem });
+  } catch (erro) {
+    console.error('Aceitar regras:', erro.message);
+    await i.editReply(`⚠️ ${explicarErro(erro)}`).catch(() => {});
+  }
+}
+
+/** /regras: as regras só pra quem pediu (com o botão, se a pessoa ainda não aceitou) */
+async function responderRegras(i) {
+  const cfg = dados.config();
+  if (!lerRegistro().regrasMsg || !temRegras(cfg.regras)) return void (await i.reply(efemero({ content: 'A staff ainda não publicou as regras deste servidor.' })));
+  await i.deferReply({ flags: MessageFlags.Ephemeral });
+  const aceitou = cfg.regras.cargoId && i.member.roles.cache.has(cfg.regras.cargoId);
+  const msg = await montarRegras(i.guild, cfg, { comBotao: !aceitou });
+  await i.editReply({ ...msg, flags: MessageFlags.IsComponentsV2 });
 }
 
 /** Abre o ticket e devolve o canal. Erros viram mensagem pra pessoa. @param {import('discord.js').GuildMember} membro */
@@ -1894,6 +2036,7 @@ export const api = {
       aniversarios: guild ? await comFoto(guild, lerAniversarios()) : [],
       ocorrencias: guild ? lerOcorrencias().slice(0, 100) : [],
       tickets: guild ? filaDeTickets(guild) : [],
+      regrasMsg: guild ? mensagemDasRegras(guild) : null,
       paineis: guild
         ? dados.paineis()
             .filter((p) => p.servidorId === guild.id)
@@ -1921,11 +2064,13 @@ export const api = {
       await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
       await sincronizarAutomod(guild, cfg, rel);
       await prepararTickets(guild, cfg, rel);
+      await prepararRegras(guild, cfg, rel);
     } else rel.push(client.isReady() ? 'Escolha um servidor pra criar os cargos.' : 'Bot offline: a configuração foi salva; cargos e painéis atualizam quando salvar com ele online.');
     dados.salvarConfig(cfg);
     if (guild) {
       await atualizarPaineis(guild, rel);
       await publicarPainelTickets(guild, rel, cfg);
+      await publicarRegras(guild, rel, cfg);
       await registrarComandos(guild);
       const velho = antes !== cfg.servidorId ? servidor(antes) : null;
       if (velho) await velho.commands.set([]).catch(() => {});
@@ -2087,6 +2232,19 @@ export const api = {
     } catch (erro) {
       throw comStatus(400, explicarErro(erro));
     }
+  },
+
+  // Aba Regras: "Enviar no #canal" / "Atualizar mensagem" (a config já foi salva antes)
+  async enviarRegras() {
+    const guild = servidor();
+    if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
+    const rel = [];
+    const primeira = !lerRegistro().regrasMsg;
+    const msg = await publicarRegras(guild, rel, dados.config(), { forcar: true });
+    // Na primeira vez o /regras passa a existir
+    if (primeira) await registrarComandos(guild);
+    await avisarSeNaoGravou(rel);
+    return { link: msg.url, relatorio: rel, regrasMsg: mensagemDasRegras(guild) };
   },
 
   async apagar(mensagemId) {
