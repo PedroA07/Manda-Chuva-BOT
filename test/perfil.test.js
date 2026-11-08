@@ -366,3 +366,21 @@ test('favoritos: perfil antigo começa com as 4 listas vazias e aparecendo', () 
   lerPerfis()[ID] = { banner: 'banners/perfil/jogos-2.jpg', bio: '', fixadas: [] };
   assert.deepEqual(perfilDe(ID).fav, { jogos: [], filmes: [], livros: [], musicas: [], mostrar: { jogos: true, filmes: true, livros: true, musicas: true } });
 });
+
+test('redes: Letterboxd e Instagram pelo nome, Steam pelo login; desligar e esconder; só as liberadas aparecem', async () => {
+  const { mudarRede, ligarSteam, redesPublicas } = await import('../lib/perfil.js');
+  zerarPerfis();
+  assert.deepEqual(perfilDe(ID).redes, {});
+  assert.equal((await mudarRede(ID, { acao: 'ligar', rede: 'letterboxd', user: '@Pedrinho.Filmes ' })).perfil.redes.letterboxd.user, 'Pedrinho.Filmes');
+  assert.match((await mudarRede(ID, { acao: 'ligar', rede: 'instagram', user: 'a b' })).erro, /usuário/);
+  assert.match((await mudarRede(ID, { acao: 'ligar', rede: 'steam', user: 'x' })).erro, /Steam/);
+  assert.match((await mudarRede(ID, { acao: 'ligar', rede: 'orkut', user: 'x' })).erro, /não existe/);
+  await mudarRede(ID, { acao: 'ligar', rede: 'instagram', user: 'pedrinho.mc' });
+  assert.equal((await ligarSteam(ID, '76561197960287930')).perfil.redes.steam.id, '76561197960287930');
+  assert.deepEqual(redesPublicas(perfilDe(ID)).map((r) => r.rede), ['steam', 'letterboxd', 'instagram']);
+  await mudarRede(ID, { acao: 'mostrar', rede: 'instagram', on: false });
+  assert.deepEqual(redesPublicas(perfilDe(ID)).map((r) => r.rede), ['steam', 'letterboxd']);
+  await mudarRede(ID, { acao: 'desligar', rede: 'steam' });
+  assert.equal(perfilDe(ID).redes.steam, undefined);
+  assert.deepEqual(redesPublicas(perfilDe(ID)).map((r) => [r.rede, r.conta.user]), [['letterboxd', 'Pedrinho.Filmes']]);
+});

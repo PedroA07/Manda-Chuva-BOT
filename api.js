@@ -1,7 +1,8 @@
 // API que a interface web (repositório Interface-Manda-Chuva-Bot) usa pra configurar o bot
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { criarEstado, criarSessao, lerEstado, lerSessao, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
+import { conferirSteam, linkDaSteam } from './lib/redes.js';
+import { criarEstado, criarEstadoSteam, criarSessao, lerEstado, lerEstadoSteam, lerSessao, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
 import { VERSAO } from './lib/versao.js';
 
 const LOCAIS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -23,6 +24,15 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
     'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
     'POST /api/eu/favoritos': ['membro', (corpo, _, quem) => api.favorito(quem, corpo)],
+    // Redes: Letterboxd e Instagram pelo nome; Steam pelo login da própria Steam (volta em /auth/steam/volta)
+    'POST /api/eu/redes': ['membro', (corpo, _, quem) => api.rede(quem, corpo)],
+    'POST /api/eu/redes/steam': ['membro', (corpo, _, quem) => {
+      if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+      const volta = String(corpo?.volta ?? '').split('#')[0];
+      if (!voltaPermitida(volta, origens)) throw comStatus(400, 'Endereço de volta não liberado no PAINEL_ORIGENS.');
+      return { link: linkDaSteam(`${voltaDaSteam()}?estado=${encodeURIComponent(criarEstadoSteam(quem.id, volta))}`) };
+    }],
+    'GET /api/redes': ['membro', (_, url) => api.cartoesDe(url.searchParams.get('id'))],
     'GET /api/publico': ['membro', () => api.publico()],
     'GET /api/turma': ['membro', (_, url) => api.turma(url.searchParams)],
     'GET /api/estado': ['staff', (_, url) => api.estado(url.searchParams.get('servidor'))],
@@ -49,6 +59,8 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
   const segredo = () => process.env.DISCORD_CLIENT_SECRET ?? '';
   const clientId = () => process.env.DISCORD_CLIENT_ID || api.clientId?.() || null;
   const loginLigado = () => !!(segredo() && clientId());
+  // Volta do login da Steam: endereço público do bot (o mesmo que a Steam devolve no openid.return_to)
+  const voltaDaSteam = () => new URL('/auth/steam/volta', process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || `http://localhost:${porta}`).href;
 
   /** Quem está chamando: senha (admin) ou sessão do Discord (papel no servidor) */
   async function identificar(req) {
@@ -120,6 +132,16 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
         }
       }
 
+      // ---------- Volta do login da Steam (Meu perfil › Redes) ----------
+      if (req.method === 'GET' && url.pathname === '/auth/steam/volta') {
+        const e = lerEstadoSteam(url.searchParams.get('estado'));
+        if (!e || !voltaPermitida(e.volta, origens)) return paginaDeVolta(res, 'Esse login da Steam demorou demais (o link vale 10 minutos).', 'vá em <b>Meu perfil › Redes</b> e clique em <b>Conectar com Steam</b> de novo');
+        const steamid = await conferirSteam(url.searchParams, voltaDaSteam());
+        if (!steamid) return redirecionar(res, `${e.volta}#redes=steam-erro`);
+        await api.ligarSteam?.(e.id, steamid);
+        return redirecionar(res, `${e.volta}#redes=steam-ok`);
+      }
+
       // Imagens enviadas pelo painel: públicas (vão pro Discord de qualquer jeito) pra <img> conseguir mostrar
       const anexo = req.method === 'GET' && /^\/anexos\/([0-9a-f]{16})(\.\w+)?$/.exec(url.pathname);
       if (anexo) {
@@ -183,13 +205,13 @@ function retorno(req) {
 }
 
 /** Página simples (no visual do painel) com o botão pra voltar e entrar de novo */
-function paginaDeVolta(res, texto) {
+function paginaDeVolta(res, texto, acao = 'clique em <b>Entrar com Discord</b>') {
   const painel = process.env.URL_PAINEL_PAGINA || 'https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html';
   res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Manda Chuva · login</title>
 <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#1f2a5c;font:500 16px/1.5 system-ui,sans-serif;color:#1b1f33">
 <div style="max-width:420px;margin:20px;padding:28px;background:#fffcf4;border:3px solid #1b1f33;border-radius:18px;box-shadow:8px 8px 0 #0e1430;display:grid;gap:14px">
-<b style="font-size:22px">Quase lá!</b><span>${texto} Volte pro painel e clique em <b>Entrar com Discord</b>.</span>
+<b style="font-size:22px">Quase lá!</b><span>${texto} Volte pro painel e ${acao}.</span>
 <a href="${painel}" style="padding:12px;text-align:center;background:#5865f2;color:#fff;border:2px solid #1b1f33;border-radius:12px;font-weight:800;text-decoration:none">Voltar pro painel</a>
 </div></body></html>`);
 }

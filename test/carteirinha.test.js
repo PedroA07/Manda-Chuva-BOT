@@ -288,3 +288,19 @@ test('ficha de favoritos: cada lista vira uma linha de capas; sem nenhuma públi
   // primeira capa: roxa por dentro
   assert.equal(await corEm(png, 32 + 88, 166 + 22 + 12 + 117), '#9b59b6');
 });
+
+test('ficha de redes: um cartão por rede (com pôster, capa e aviso); sem nenhuma, o aviso', async () => {
+  const capa = pngLiso('#ff8000', 60, 90);
+  const redes = [
+    { rede: 'steam', nome: 'Steam', user: 'Pedrinho', status: 'JOGANDO', stats: [['27', 'nível'], ['84', 'jogos'], ['1.240 h', 'total']], itens: [{ t: 'Among Us', img: capa, s: '96 h' }], rotulo: 'JOGADOS RECENTEMENTE' },
+    { rede: 'letterboxd', nome: 'Letterboxd', user: '@pedrinho', status: '3 FILMES', stats: [['3', 'no diário']], itens: [{ t: 'Interestelar', img: capa, s: '★★★★★' }, { t: 'Shrek', img: null, s: '' }] },
+    { rede: 'instagram', nome: 'Instagram', user: '@pedrinho.mc', status: 'INSTAGRAM', stats: [], itens: [] },
+    { rede: 'steam', nome: 'Steam', user: 'Steam', status: 'PERFIL FECHADO', aviso: 'O perfil da Steam está fechado.', stats: [], itens: [] },
+  ];
+  const png = await desenharFicha({ ...FICHA, redes }, { tipo: 'titulo', titulo: 'REDES' });
+  const vazio = await desenharFicha({ ...FICHA, redes: [] }, { tipo: 'titulo', titulo: 'REDES' });
+  const [, a] = tamanhoPng(png), [, av] = tamanhoPng(vazio);
+  assert.ok(a > av + 700, `${av} → ${a}`);
+  // fundo do primeiro cartão é o azul da Steam
+  assert.equal(await corEm(png, 900, 166 + 22 + 12 + 10), '#1b2838');
+});

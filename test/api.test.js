@@ -159,3 +159,41 @@ test('login com Discord desligado volta pro site com o aviso; volta não liberad
   assert.match(direto.headers.get('content-type'), /text\/html/);
   assert.match(await direto.text(), /Entrar com Discord/);
 });
+
+test('Steam: link só pra quem entrou com Discord e volta liberada; a volta liga a conta depois que a Steam confirma', async (t) => {
+  const ligados = [];
+  const api = { saude: () => ({}), papelDe: async () => 'membro', ligarSteam: async (id, steamid) => ligados.push([id, steamid]) };
+  const { servidor, base } = await subir(api, { origens: ['https://site.exemplo'] });
+  t.after(() => servidor.close());
+  const sessao = criarSessao({ id: '123456789012345678', nome: 'Pedro', usuario: 'pedrinho' });
+  const pedir = (corpo, cab = { Authorization: `Sessao ${sessao}` }) =>
+    fetch(`${base}/api/eu/redes/steam`, { method: 'POST', headers: { 'X-Painel': '1', 'Content-Type': 'application/json', ...cab }, body: JSON.stringify(corpo) });
+  assert.equal((await pedir({ volta: 'https://golpe.com/' })).status, 400);
+  assert.equal((await pedir({ volta: 'https://site.exemplo/painel.html' }, {})).status, 400); // senha do painel (sem conta do Discord)
+  const { link } = await (await pedir({ volta: 'https://site.exemplo/painel.html' })).json();
+  const steam = new URL(link);
+  assert.equal(steam.host, 'steamcommunity.com');
+  const voltaDaSteam = new URL(steam.searchParams.get('openid.return_to'));
+  assert.equal(voltaDaSteam.pathname, '/auth/steam/volta');
+
+  // A Steam devolve a pessoa (no endereço que o bot mandou); o bot confere com a Steam
+  const fetchDeVerdade = globalThis.fetch;
+  let perguntou = false;
+  globalThis.fetch = async (url, o) => (String(url).startsWith('https://steamcommunity.com/openid/login') ? ((perguntou = true), new Response('is_valid:true\n')) : fetchDeVerdade(url, o));
+  t.after(() => (globalThis.fetch = fetchDeVerdade));
+  const volta = new URL(`${base}/auth/steam/volta`);
+  volta.search = new URLSearchParams({ estado: voltaDaSteam.searchParams.get('estado'), 'openid.mode': 'id_res', 'openid.return_to': voltaDaSteam.href, 'openid.claimed_id': 'https://steamcommunity.com/openid/id/76561197960287930', 'openid.sig': 'x' }).toString();
+  const r = await fetchDeVerdade(volta, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  assert.equal(r.headers.get('location'), 'https://site.exemplo/painel.html#redes=steam-ok');
+  assert.ok(perguntou);
+  assert.deepEqual(ligados, [['123456789012345678', '76561197960287930']]);
+
+  // Estado mexido ou vencido: página de volta, sem ligar nada
+  const ruim = new URL(volta);
+  ruim.searchParams.set('estado', 'lixo');
+  const p = await fetchDeVerdade(ruim, { redirect: 'manual' });
+  assert.equal(p.status, 400);
+  assert.match(await p.text(), /Conectar com Steam/);
+  assert.equal(ligados.length, 1);
+});

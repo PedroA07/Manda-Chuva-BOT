@@ -41,7 +41,8 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, MEDALHAS, medalhasDe, mudarFavorito, perfilDe, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, perfilDe, redesPublicas, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
+import { cartaoGuardado, esquecerCartao } from './lib/redes.js';
 import { acharCapa, capaDaGaleria, capaPermitida, podeProcurar } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
@@ -195,6 +196,7 @@ async function responderInteracao(interacao) {
     regras: responderRegras,
     trofeus: (i) => responderFicha(i, 'trofeus'),
     favoritos: (i) => responderFicha(i, 'favoritos'),
+    redes: (i) => responderFicha(i, 'redes'),
   }[interacao.commandName];
   if (outro) return outro(interacao).catch((erro) => console.error(`/${interacao.commandName}:`, erro));
   // Aniversário: botão abre o formulário; formulário e /aniversario cadastram
@@ -340,10 +342,11 @@ export function comandos(cfg = dados.config()) {
       .setName('perfil')
       .setDescription('Mostra a carteirinha com banner, foto e medalhas')
       .addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)'))
-      .addBooleanOption((o) => o.setName('completo').setDescription('Tudo: aniversário, favoritos e troféus (só o que a pessoa deixou ver)'))
+      .addBooleanOption((o) => o.setName('completo').setDescription('Tudo: aniversário, redes, favoritos e troféus (só o que a pessoa deixou ver)'))
       .toJSON(),
     new SlashCommandBuilder().setName('trofeus').setDescription('Medalhas e troféus do servidor, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('favoritos').setDescription('Jogos, filmes, livros e músicas favoritos, em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
+    new SlashCommandBuilder().setName('redes').setDescription('As redes vinculadas (Steam, Letterboxd, Instagram), em imagem').addUserOption((o) => o.setName('membro').setDescription('De quem (padrão: você)')).toJSON(),
     new SlashCommandBuilder().setName('medalhas').setDescription('Lista as suas medalhas e o que falta').toJSON(),
     new SlashCommandBuilder()
       .setName('painel')
@@ -2016,6 +2019,8 @@ async function cartaoDoMembro(m) {
     ap: p.ap, niver,
     // Só as listas que a pessoa deixou aparecer
     fav: favoritosPublicos(p).map((f) => ({ tipo: f.tipo, itens: f.itens })),
+    // Quais redes aparecem (os cartões vêm por /api/redes, só quando abrem o perfil)
+    redes: redesPublicas(p).map((r) => r.rede),
   };
 }
 
@@ -2117,7 +2122,23 @@ async function dadosDoCabecalho(m) {
   };
 }
 
-const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niver: ['aniversario', 'ANIVERSÁRIO'], favoritos: ['favoritos', 'FAVORITOS'] };
+const FICHAS = { completo: ['perfil', ''], trofeus: ['trofeus', 'TROFÉUS'], niver: ['aniversario', 'ANIVERSÁRIO'], favoritos: ['favoritos', 'FAVORITOS'], redes: ['redes', 'REDES'] };
+
+/** Imagem de cartão de rede: só das próprias redes (pôster do Letterboxd, capa da Steam) */
+function imagemDeRede(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && ['ltrbxd.com', 'steamstatic.com'].some((h) => u.hostname === h || u.hostname.endsWith(`.${h}`));
+  } catch {
+    return false;
+  }
+}
+
+/** Cartões das redes que a pessoa deixou aparecer, com as imagens baixadas */
+async function redesDaFicha(m) {
+  const cartoes = await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta)));
+  return Promise.all(cartoes.map(async (c) => ({ ...c, itens: await Promise.all((c.itens ?? []).map(async (it) => ({ ...it, img: imagemDeRede(it.src) ? await baixarImagem(it.src) : null }))) })));
+}
 const PROPORCAO = { jogos: 3 / 4, filmes: 2 / 3, livros: 2 / 3, musicas: 1 };
 
 /** Favoritos públicos com as capas baixadas (a capa que falhar vira o banner da galeria) */
@@ -2146,6 +2167,7 @@ async function responderFicha(i, tipo) {
     return [
       completo ? perfilEmTexto(m) : `**${m.displayName}**`,
       (completo || tipo === 'niver') && `🎂 ${aniversarioDaFicha(m)}`,
+      (completo || tipo === 'redes') && `🔗 ${redesPublicas(perfilDe(m.id)).map((r) => (r.conta.user ? `${r.rede}: ${r.conta.user}` : r.rede)).join(' · ') || 'nenhuma rede'}`,
       ...(completo || tipo === 'favoritos' ? favs : []),
       (completo || tipo === 'trofeus') && `🏅 ${medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.nome).join(', ')}`,
     ].filter(Boolean).join('\n');
@@ -2153,6 +2175,7 @@ async function responderFicha(i, tipo) {
   try {
     const d = completo ? await dadosDaCarteirinha(m) : await dadosDoCabecalho(m);
     if (completo || tipo === 'niver') d.niver = aniversarioDaFicha(m);
+    if (completo || tipo === 'redes') d.redes = await redesDaFicha(m);
     if (completo || tipo === 'favoritos') d.favoritos = await favoritosDaFicha(m);
     if (completo || tipo === 'trofeus') d.trofeus = await trofeusDe(m);
     const png = await desenharFicha(d, { tipo: completo ? 'completo' : 'titulo', titulo });
@@ -2230,7 +2253,8 @@ async function responderPrivacidade(i) {
   const avisos = lerAvisos().filter((a) => a.userId === id).length;
   const lista = [
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
-    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ' e favoritos' : ''}` : 'nunca mexeu'}`,
+    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ', medalhas fixadas' : ''}${Object.values(perfil.fav ?? {}).some((x) => Array.isArray(x) && x.length) ? ', favoritos' : ''}` : 'nunca mexeu'}`,
+    `🔗 Redes vinculadas: ${Object.entries(perfil?.redes ?? {}).map(([r, c]) => (c.user ? `${r} (@${c.user})` : `${r} (ID ${c.id})`)).join(', ') || 'nenhuma'}`,
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
   ].join('\n');
@@ -2328,6 +2352,32 @@ export const api = {
     const r = await mudarFavorito(m.id, corpo, (tipo, nome) => acharCapa(tipo, nome));
     if (r.erro) throw comStatus(400, r.erro);
     return { ok: true, perfil: r.perfil };
+  },
+
+  // Redes de Meu perfil: ligar (Letterboxd, Instagram), desligar ou esconder
+  async rede(quem, corpo) {
+    if (quem.tipo !== 'discord') throw comStatus(400, 'Entre com o Discord pra ter perfil.');
+    const m = await servidor()?.members.fetch(quem.id).catch(() => null);
+    if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
+    const antes = perfilDe(m.id).redes?.[corpo?.rede];
+    const r = await mudarRede(m.id, corpo);
+    if (r.erro) throw comStatus(400, r.erro);
+    if (antes) esquecerCartao(corpo.rede, antes);
+    return { ok: true, perfil: r.perfil };
+  },
+  // Volta do login da Steam, já conferida com a Steam (api.js)
+  async ligarSteam(userId, steamid) {
+    const r = await ligarSteam(userId, steamid);
+    if (r.erro) console.error('Ligar a Steam:', r.erro);
+    esquecerCartao('steam', { id: steamid });
+  },
+  // Cartões das redes de alguém (o que a pessoa deixou aparecer), pro site
+  async cartoesDe(id) {
+    const guild = servidor();
+    if (!guild) throw comStatus(503, 'O bot está dormindo. Tente de novo em 1 minuto.');
+    const m = /^\d{15,25}$/.test(String(id ?? '')) ? await guild.members.fetch(String(id)).catch(() => null) : null;
+    if (!m) throw comStatus(404, 'Não achei essa pessoa no servidor.');
+    return { redes: await Promise.all(redesPublicas(perfilDe(m.id)).map(({ rede, conta }) => cartaoGuardado(rede, conta))) };
   },
 
   // Antes de ler o corpo da imagem: quem passou do limite nem chega a mandar os 8 MB pra memória do bot
