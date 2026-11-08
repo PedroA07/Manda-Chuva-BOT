@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { normalizar, PADRAO } from '../dados.js';
+import { noServidor } from '../lib/contexto.js';
 import { montarV2, validarV2 } from '../lib/mensagem.js';
 import {
   estaParado, haQuanto, mediaDeResposta, nomeDoCanal, numero, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento,
@@ -82,6 +83,9 @@ test('fechamento e transcrição: onde foi parar e quando o canal some', () => {
 test('avaliação: 5 estrelas; depois de votar ficam travadas', () => {
   const antes = pedacoDaAvaliacao(TICKET, 'Servidor');
   assert.deepEqual(antes.linhas[0].components.map((b) => b.custom_id), ['tkn:42:1', 'tkn:42:2', 'tkn:42:3', 'tkn:42:4', 'tkn:42:5']);
+  // A DM não diz de que servidor é o ticket: o botão leva o id junto
+  const noOutro = noServidor('123456789012345678', () => pedacoDaAvaliacao(TICKET, 'Servidor'));
+  assert.equal(noOutro.linhas[0].components[0].custom_id, 'tkn:42:1:123456789012345678');
   const depois = pedacoDaAvaliacao(TICKET, 'Servidor', 4);
   assert.ok(depois.linhas[0].components.every((b) => b.disabled));
   assert.match(depois.texto, /Nota 4\/5/);

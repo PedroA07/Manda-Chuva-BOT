@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { after, before, beforeEach, test } from 'node:test';
 import { createCanvas } from '@napi-rs/canvas';
 import { fazerGif, VERDE, VERMELHO } from './ajuda-gif.js';
+import { definirPadrao } from '../lib/contexto.js';
 
 process.env.DADOS_PASTA = mkdtempSync(join(tmpdir(), 'manda-chuva-perfil-'));
 delete process.env.GIST_ID;
@@ -102,6 +103,8 @@ function ligarDiscordFalso(permissoesDoBot = GERENCIAR_CANAIS | (1n << 10n) | (1
     ],
     members: [membroCru(BOT), membroCru(PEDRO), membroCru(BIA)],
   });
+  // Como em produção: o servidor que o bot já cuidava é o padrão (lib/contexto.js)
+  definirPadrao(SERVIDOR);
   dados.salvarConfig({ ...dados.config(), servidorId: SERVIDOR, tickets: { ...dados.config().tickets, staffId: STAFF } });
   return guild;
 }

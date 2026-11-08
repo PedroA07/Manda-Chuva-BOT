@@ -6,6 +6,7 @@ import {
   Client,
   Events,
   GatewayIntentBits as I,
+  Guild,
   GuildFeature,
   MessageFlags,
   OAuth2Scopes,
@@ -24,6 +25,7 @@ import { aniversariantesDoDia, lerAniversarios, lerData, lerDataEmBlocos, salvar
 import { baixarImagem, desenharCard, desenharCardNiver } from './lib/card.js';
 import { desenharCarteirinha, desenharFicha, nomeDoArquivo, tempoDeCasa } from './lib/carteirinha.js';
 import { conectar } from './lib/conexao.js';
+import { noServidor, servidorAtual } from './lib/contexto.js';
 import { emojiDaCor } from './lib/emojis.js';
 import { ligarPortaria } from './lib/eventos.js';
 import { errosDaHierarquia, lerSeparador, listaDaHierarquia, PERMS, planejarHierarquia, posicoes } from './lib/hierarquia.js';
@@ -41,7 +43,7 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, perfilDe, redesPublicas, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, perfilDe, redesPublicas, salvarPerfil, textoDoAniversario, todosOsPerfis, visualDoPerfil } from './lib/perfil.js';
 import { cartaoGuardado, esquecerCartao } from './lib/redes.js';
 import { acharCapa, capaDaGaleria, capaPermitida, capaSugerida, podeProcurar, podeSugerir, sugerir, TIPOS_FAVORITOS } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
@@ -98,9 +100,38 @@ const conviteDireto = () => client.generateInvite({ scopes: [OAuth2Scopes.Bot, O
 const urlPublica = () => process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || '';
 const linkConvite = () => (urlPublica() ? new URL('/convite', urlPublica()).href : conviteDireto());
 
-/** Servidor configurado (ou o do id passado), se o bot estiver nele. @param {string | null} [id] */
-function servidor(id = dados.config().servidorId) {
+/** Servidor da vez (lib/contexto.js) ou o do id passado, se o bot estiver nele. @param {string | null} [id] */
+function servidor(id = servidorAtual()) {
   return id && client.isReady() ? (client.guilds.cache.get(id) ?? null) : null;
+}
+
+/** Roda fn uma vez em cada servidor em que o bot está, cada um com os próprios dados. Erro em um não para os outros. */
+async function paraCadaServidor(nome, fn) {
+  if (!client?.isReady()) return;
+  for (const guild of client.guilds.cache.values()) {
+    await noServidor(guild.id, fn).catch((erro) => console.error(`${nome} (${guild.name}):`, explicarErro(erro)));
+  }
+}
+
+/** Cada evento do cliente roda dentro do servidor de onde veio (lib/contexto.js): config, perfis, tickets... são os dele */
+export function eventosPorServidor(c) {
+  const emitir = c.emit.bind(c);
+  c.emit = (evento, ...args) => {
+    const id = servidorDoEvento(args);
+    return id ? noServidor(id, () => emitir(evento, ...args)) : emitir(evento, ...args);
+  };
+  return c;
+}
+
+/** De que servidor veio um evento do Discord (interação, mensagem, membro, call, ban, auditoria, o próprio servidor) */
+export function servidorDoEvento(args) {
+  for (const a of args) {
+    if (!a || typeof a !== 'object') continue;
+    if (a instanceof Guild) return a.id;
+    const id = a.guildId ?? a.guild?.id;
+    if (typeof id === 'string') return id;
+  }
+  return null;
 }
 
 /** @param {import('discord.js').Role} cargo */
@@ -583,12 +614,16 @@ async function voltouSilenciado(membro) {
   await membro.timeout(SILENCIOS.sem[0], 'Voltou com silêncio sem prazo');
 }
 
-/** A cada 6 horas: renova silêncios sem prazo, atualiza as regras do auto-mod (convites novos do servidor) e tira imagens sem uso */
+/** A cada 6 horas: tira imagens sem uso e, em cada servidor, renova silêncios sem prazo e atualiza as regras do auto-mod (convites novos) */
 async function manutencao() {
   await vestirMascote();
+  if (soPainel) return;
+  await limparImagens();
+  await paraCadaServidor('Manutenção', manutencaoDoServidor);
+}
+async function manutencaoDoServidor() {
   const guild = servidor();
-  if (!guild || soPainel) return;
-  await limparImagens(dados.config());
+  if (!guild) return;
   await cuidarDosSilencios(guild);
   const rel = [];
   await sincronizarAutomod(guild, dados.config(), rel);
@@ -1244,13 +1279,15 @@ async function publicarPainelTickets(guild, rel, cfg = dados.config()) {
 
 // ---------- Aba Servidor: montar e renomear ----------
 // Roda em segundo plano (dezenas de chamadas ao Discord, com limite de velocidade); o painel acompanha pelo andamento.
-let obra = null; // { tipo, status: 'andando' | 'pronto' | 'erro', passo, feitos, total, rel, inicio, fim }
+// Uma por servidor: { tipo, status: 'andando' | 'pronto' | 'erro', passo, feitos, total, rel, inicio, fim }
+const obras = new Map();
+const obraDaVez = () => obras.get(servidorAtual()) ?? null;
 
 /** Começa a obra se não tiver outra andando. fazer(t, rel) mexe no Discord e conta em t.feitos. */
 function comecarObra(tipo, fazer) {
-  if (obra?.status === 'andando') throw comStatus(409, 'Já tem uma obra em andamento. Espera terminar.');
+  if (obraDaVez()?.status === 'andando') throw comStatus(409, 'Já tem uma obra em andamento. Espera terminar.');
   const t = { tipo, status: 'andando', passo: 'Começando…', feitos: 0, total: 0, rel: [], inicio: Date.now(), fim: null };
-  obra = t;
+  obras.set(servidorAtual(), t);
   fazer(t)
     .then(() => (t.status = 'pronto'))
     .catch((erro) => {
@@ -1750,10 +1787,15 @@ async function apagarCanaisFechados() {
   await salvarTickets({ apagar: lerTickets().apagar.filter((a) => !vencidos.includes(a)) });
 }
 
-/** A cada 10 min: tira da fila ticket com canal apagado na mão e fecha os parados */
-async function conferirTickets() {
+/** A cada 10 min: veste o mascote, grava os contadores e confere os tickets de cada servidor */
+async function aCada10Minutos() {
   await vestirMascote();
   await gravarEstatisticas();
+  await paraCadaServidor('Tickets', conferirTickets);
+}
+
+/** Tira da fila ticket com canal apagado na mão e fecha os parados */
+async function conferirTickets() {
   const guild = servidor();
   if (!guild || soPainel) return;
   await apagarCanaisFechados();
@@ -1854,7 +1896,11 @@ async function responderTicket(i) {
 
 /** Nota na DM (botões tkn:<num>:<nota>) */
 async function avaliarTicket(i) {
-  const [, num, nota] = i.customId.split(':').map(Number);
+  // A DM não tem servidor: o botão diz qual é (os antigos, sem isso, são do servidor padrão)
+  const [, num, nota, servidorId] = i.customId.split(':');
+  return noServidor(/^\d{15,25}$/.test(servidorId ?? '') ? servidorId : null, () => darNota(i, Number(num), Number(nota)));
+}
+async function darNota(i, num, nota) {
   const f = avaliar(num, nota);
   const guild = servidor();
   const msg = montarV2(pedacoDaAvaliacao(f ?? { num, motivo: 'ticket' }, guild?.name ?? 'servidor', nota));
@@ -1866,16 +1912,29 @@ async function avaliarTicket(i) {
 
 // ---------- Login, papéis, Meu perfil e medalhas ----------
 // Papel no site: admin (Gerenciar servidor), staff (cargo da staff dos tickets) ou membro. Conferido de novo a cada minuto.
+// O papel vale por servidor: staff num pode ser só membro no outro.
 const papeis = new Map();
-async function papelDe(userId) {
-  const guild = servidor();
+async function papelDe(userId, guild = servidor()) {
   if (!guild) return null;
-  const c = papeis.get(userId);
+  const chave = `${guild.id}:${userId}`;
+  const c = papeis.get(chave);
   if (c && Date.now() - c.ts < 60_000) return c.papel;
   const m = await guild.members.fetch({ user: userId, force: true }).catch(() => null);
-  const papel = !m || m.user.bot ? null : m.permissions.has(P.ManageGuild) ? 'admin' : ehStaffTicket(m) ? 'staff' : 'membro';
-  papeis.set(userId, { papel, ts: Date.now() });
+  // A staff dos tickets é da config de cada servidor
+  const papel = !m || m.user.bot ? null : m.permissions.has(P.ManageGuild) ? 'admin' : noServidor(guild.id, () => ehStaffTicket(m)) ? 'staff' : 'membro';
+  papeis.set(chave, { papel, ts: Date.now() });
   return papel;
+}
+
+/** Servidores do bot em que a pessoa está, com o papel dela em cada um (senha do painel: todos, como admin) */
+async function servidoresDe(userId) {
+  if (!client?.isReady()) return [];
+  const lista = [];
+  for (const g of client.guilds.cache.values()) {
+    const papel = userId ? await papelDe(userId, g) : 'admin';
+    if (papel) lista.push({ id: g.id, nome: g.name, icone: g.iconURL({ size: 64 }), sigla: g.nameAcronym, papel });
+  }
+  return lista.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
 }
 
 /** Cargos que aparecem no perfil (de cima pra baixo, sem @everyone e sem cargo de integração) */
@@ -1947,7 +2006,8 @@ async function dadosDaCarteirinha(m) {
 // Depósito: anexo de membro fica como mensagem num canal escondido do servidor, não no Gist (lib/anexos.js explica por quê).
 // A staff enxerga o canal: apagar uma mensagem lá tira a imagem do perfil de quem mandou.
 const NOME_DEPOSITO = 'deposito-do-bot';
-let criandoDeposito = null;
+// Um canal por servidor; enquanto cria, quem pedir junto espera o mesmo
+const criandoDeposito = new Map();
 /** Erro do Discord não vai pra tela do membro: fica no log, e ele recebe um aviso que dá pra entender */
 function naoGuardou(erro) {
   console.error('Depósito de imagens:', erro.message);
@@ -1963,7 +2023,7 @@ async function canalDoDeposito() {
     throw comStatus(503, 'Por enquanto não dá pra anexar: falta o bot ter a permissão Gerenciar canais. Usa um link, ou pede pra staff liberar.');
   }
   const staff = dados.config().tickets.staffId;
-  criandoDeposito ??= guild.channels
+  if (!criandoDeposito.has(guild.id)) criandoDeposito.set(guild.id, guild.channels
     .create({
       name: NOME_DEPOSITO,
       type: ChannelType.GuildText,
@@ -1975,8 +2035,8 @@ async function canalDoDeposito() {
       ],
     })
     .catch(naoGuardou)
-    .finally(() => (criandoDeposito = null));
-  return criandoDeposito;
+    .finally(() => criandoDeposito.delete(guild.id)));
+  return criandoDeposito.get(guild.id);
 }
 
 usarDeposito({
@@ -2006,9 +2066,9 @@ function limitarEnvios(userId) {
   if (!podeEnviar(userId)) throw comStatus(429, 'Calma aí: dá pra trocar de imagem até 5 vezes a cada 10 minutos.');
 }
 
-/** Apaga as imagens que nem a config nem os perfis usam mais. Falhar aqui não atrapalha quem chamou. */
-const limparImagens = (config, opcoes) =>
-  limparAnexos({ config, perfis: lerPerfis() }, opcoes).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
+/** Apaga as imagens que nem as configs nem os perfis de NENHUM servidor usam mais. Falhar aqui não atrapalha quem chamou. */
+const limparImagens = (opcoes) =>
+  limparAnexos({ atual: dados.config(), configs: dados.todasAsConfigs(), perfis: todosOsPerfis() }, opcoes).catch((erro) => console.error('Não consegui apagar imagens antigas:', erro.message));
 
 /** Cartão de alguém na lista pública: banner, foto, medalhas fixadas (que ainda valem) e 3 cargos */
 async function cartaoDoMembro(m) {
@@ -2281,7 +2341,7 @@ export async function apagarMeusDados(i) {
   await tirarAniversario(id);
   const imagens = refsDeAnexo(lerPerfis()[id]);
   await apagarPerfil(id);
-  await limparImagens(dados.config(), { imediatos: imagens });
+  await limparImagens({ imediatos: imagens });
   apagarEstatisticas(id);
   await gravarEstatisticas();
   await i.editReply(montarV2({ cor: 0x2f8f5b, titulo: '🗑️ Pronto, apagado', texto: 'Seu aniversário, perfil, imagens enviadas e contadores das medalhas sumiram. Se continuar no servidor, os contadores recomeçam do zero.' }));
@@ -2306,13 +2366,16 @@ async function donoDoBot() {
 export const api = {
   saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE, convite: client.isReady() ? linkConvite() : null }),
   clientId: () => client.application?.id ?? client.user?.id ?? null,
+  servidoresDe,
+  /** O bot está nesse servidor? (o painel escolhe com o X-Servidor) */
+  temServidor: (id) => !!servidor(String(id ?? '')),
   // /convite da API: o que vai no link do Discord
   dadosDoConvite: () => (client.isReady() ? { clientId: client.application?.id ?? client.user.id, permissoes: PERMISSOES.reduce((a, b) => a | b, 0n).toString() } : null),
   // Depois do convite: o bot está no servidor? (o aviso do Discord pode chegar um pouco depois da confirmação)
   async servidorDoConvite(id) {
     for (let i = 0; i < 16 && client.isReady() && !client.guilds.cache.has(id); i++) await new Promise((ok) => setTimeout(ok, 500));
     const g = client.isReady() ? client.guilds.cache.get(id) : null;
-    return g ? { nome: g.name, ativo: dados.config().servidorId === g.id, atual: servidor()?.name ?? null } : null;
+    return g ? { nome: g.name } : null;
   },
   papelDe,
 
@@ -2461,9 +2524,9 @@ export const api = {
     return { ok: true, total, mensagem: `${m.nome}: ${Math.min(total, m.max)}/${m.max}.` };
   },
 
-  async estado(servidorId) {
+  async estado() {
     const cfg = dados.config();
-    const guild = servidor(servidorId || cfg.servidorId);
+    const guild = servidor();
     const user = client.isReady() ? client.user : null;
     // recursos.membros = a intent "Server Members" está liberada no portal (sem ela: sem contagem de membros)
     const recursos = { membros: temMembros(), conteudo: temConteudo() };
@@ -2480,7 +2543,7 @@ export const api = {
       ocorrencias: guild ? lerOcorrencias().slice(0, 100) : [],
       tickets: guild ? filaDeTickets(guild) : [],
       regrasMsg: guild ? mensagemDasRegras(guild) : null,
-      obra,
+      obra: obraDaVez(),
       srvMontado: lerRegistro().srvMontado ?? null,
       paineis: guild
         ? dados.paineis()
@@ -2500,10 +2563,11 @@ export const api = {
     const { cfg, erros } = dados.normalizar(entrada);
     erros.push(...errosDoPainel(cfg), ...errosDaHierarquia(entrada?.hierarquia));
     if (erros.length) throw comStatus(400, erros.join('\n'));
-    const antes = dados.config().servidorId;
+    // A config é sempre do servidor da vez (o painel escolhe qual com o X-Servidor)
+    if (servidorAtual()) cfg.servidorId = servidorAtual();
     const rel = [];
     if (entrada !== entradaBruta) rel.push('A hierarquia de cargos só muda com quem gerencia o servidor: essa parte ficou de fora.');
-    const guild = servidor(cfg.servidorId);
+    const guild = servidor();
     if (guild) {
       await sincronizarCargos(guild, cfg, rel);
       await aplicarHierarquia(guild, cfg, entrada?.hierarquia ?? null, rel);
@@ -2517,13 +2581,11 @@ export const api = {
       await publicarPainelTickets(guild, rel, cfg);
       await publicarRegras(guild, rel, cfg);
       await registrarComandos(guild);
-      const velho = antes !== cfg.servidorId ? servidor(antes) : null;
-      if (velho) await velho.commands.set([]).catch(() => {});
     }
     const postadas = guild ? await anunciarNovidades() : [];
     if (postadas.length) rel.push(`Jornal do Campus: ${postadas.map((v) => `v${v}`).join(', ')} anunciada(s) no Discord.`);
     await avisarSeNaoGravou(rel);
-    limparImagens(cfg);
+    limparImagens();
     return { config: cfg, relatorio: rel };
   },
 
@@ -2691,7 +2753,7 @@ export const api = {
     if (!guild) throw comStatus(400, 'O bot precisa estar online e com um servidor escolhido e salvo.');
     return { obra: comecarObra('renomear', (t) => renomearServidor(guild, t)) };
   },
-  andamentoServidor: () => ({ obra, montado: lerRegistro().srvMontado ?? null }),
+  andamentoServidor: () => ({ obra: obraDaVez(), montado: lerRegistro().srvMontado ?? null }),
 
   // Aba Regras: "Enviar no #canal" / "Atualizar mensagem" (a config já foi salva antes)
   async enviarRegras() {
@@ -2743,6 +2805,7 @@ function explicarErro(erro) {
 // ---------- Ligar o bot ----------
 /** Liga os eventos num cliente novo (o conectar pode criar dois: com e sem as intents privilegiadas) */
 function prepararCliente(c) {
+  eventosPorServidor(c);
   // Modo só painel: este processo só mexe no painel; quem responde aos botões é o bot hospedado
   if (!soPainel) c.on(Events.InteractionCreate, responderInteracao);
   if (!soPainel) c.on(Events.AutoModerationActionExecution, (ex) => tratarAutomod(ex).catch((erro) => console.error('Auto-mod:', erro)));
@@ -2754,24 +2817,27 @@ function prepararCliente(c) {
   c.once(Events.ClientReady, async (pronto) => {
     console.log(`✅ Bot online como ${pronto.user.tag} (versão ${VERSAO})${soPainel ? ' (modo só painel: não responde aos botões)' : ''}`);
     console.log(`🔗 Link para adicionar o bot a um servidor:\n${pronto.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES })}`);
-    const cfg = dados.config();
-    if (!cfg.servidorId && pronto.guilds.cache.size === 1) dados.salvarConfig({ ...cfg, servidorId: pronto.guilds.cache.firstKey() ?? null });
-    // Comandos sempre na versão deste código (uma atualização pode ter mudado o /aniversario, por exemplo)
-    const guild = servidor();
-    if (guild && !soPainel) await registrarComandos(guild);
-    if (guild && !soPainel) for (const v of guild.voiceStates.cache.values()) if (v.channelId && v.channelId !== guild.afkChannelId && !v.member?.user.bot) entrouNaCall(v.id);
-    // Versão nova no ar? Conta no jornal (espera um pouco pra conexão assentar)
-    setTimeout(() => anunciarNovidades().catch(() => {}), 5000);
+    // Em cada servidor: comandos sempre na versão deste código (uma atualização pode ter mudado o /aniversario, por exemplo)
+    // e o relógio da call de quem já está numa
     if (!soPainel) {
-      setTimeout(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 20_000);
-      setInterval(() => conferirAniversarios().catch((e) => console.error('Aniversários:', e.message)), 10 * 60_000);
-      setTimeout(() => conferirTickets().catch((e) => console.error('Tickets:', e.message)), 25_000);
-      setInterval(() => conferirTickets().catch((e) => console.error('Tickets:', e.message)), 10 * 60_000);
+      await paraCadaServidor('Comandos', async () => {
+        const guild = servidor();
+        await registrarComandos(guild);
+        for (const v of guild.voiceStates.cache.values()) if (v.channelId && v.channelId !== guild.afkChannelId && !v.member?.user.bot) entrouNaCall(v.id);
+      });
+    }
+    // Versão nova no ar? Conta no jornal de cada servidor (espera um pouco pra conexão assentar)
+    setTimeout(() => paraCadaServidor('Jornal', anunciarNovidades), 5000);
+    if (!soPainel) {
+      setTimeout(() => paraCadaServidor('Aniversários', conferirAniversarios), 20_000);
+      setInterval(() => paraCadaServidor('Aniversários', conferirAniversarios), 10 * 60_000);
+      setTimeout(() => aCada10Minutos().catch((e) => console.error('Tickets:', e.message)), 25_000);
+      setInterval(() => aCada10Minutos().catch((e) => console.error('Tickets:', e.message)), 10 * 60_000);
     }
     // Virou o dia e mudou a data festiva? Os painéis já enviados trocam de visual sozinhos
     if (!soPainel) {
-      setTimeout(() => conferirTema().catch(() => {}), 15_000);
-      setInterval(() => conferirTema().catch(() => {}), 30 * 60_000);
+      setTimeout(() => paraCadaServidor('Tema', conferirTema), 15_000);
+      setInterval(() => paraCadaServidor('Tema', conferirTema), 30 * 60_000);
       setTimeout(() => manutencao().catch((e) => console.error('Manutenção:', e.message)), 60_000);
       setInterval(() => manutencao().catch((e) => console.error('Manutenção:', e.message)), 6 * 3_600_000);
     }
@@ -2780,9 +2846,11 @@ function prepararCliente(c) {
       for (const guild of pronto.guilds.cache.values()) await guild.members.fetch().catch((erro) => console.error(`Não consegui listar os membros de ${guild.name}:`, explicarErro(erro)));
     }
   });
-  c.on(Events.GuildCreate, (guild) => {
-    const cfg = dados.config();
-    if (!cfg.servidorId) dados.salvarConfig({ ...cfg, servidorId: guild.id });
+  // Entrou num servidor novo: já funciona lá (começa com a config padrão; o painel deixa copiar a de outro servidor)
+  c.on(Events.GuildCreate, async (guild) => {
+    if (soPainel) return;
+    await registrarComandos(guild);
+    if (c.options.intents.has(I.GuildMembers)) await guild.members.fetch().catch(() => {});
   });
   c.on(Events.Error, (erro) => console.error('Erro do bot:', erro));
   return c;

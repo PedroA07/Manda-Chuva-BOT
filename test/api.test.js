@@ -217,7 +217,7 @@ test('convite: bot dormindo mostra a página de espera; sem o segredo do OAuth v
   assert.equal(link.searchParams.get('response_type'), null);
 });
 
-test('convite com login ligado: vai pelo código (funciona com "Requires OAuth2 Code Grant") e a volta conta onde o bot entrou', async (t) => {
+test('convite com login ligado: vai pelo código (funciona com "Requires OAuth2 Code Grant") e a volta conta em que servidor o bot entrou', async (t) => {
   const antes = process.env.DISCORD_CLIENT_SECRET;
   process.env.DISCORD_CLIENT_SECRET = 'segredo-de-teste';
   t.after(() => (process.env.DISCORD_CLIENT_SECRET = antes ?? ''));
@@ -226,7 +226,7 @@ test('convite com login ligado: vai pelo código (funciona com "Requires OAuth2 
     saude: () => ({}),
     clientId: () => '42',
     dadosDoConvite: () => ({ clientId: '42', permissoes: '8' }),
-    servidorDoConvite: async (id) => (perguntados.push(id), { nome: 'Resenha <b>', ativo: false, atual: 'SERVIDOR DOS CRIA' }),
+    servidorDoConvite: async (id) => (perguntados.push(id), { nome: 'Resenha <b>' }),
   };
   const { servidor, base } = await subir(api);
   t.after(() => servidor.close());
@@ -247,7 +247,7 @@ test('convite com login ligado: vai pelo código (funciona com "Requires OAuth2 
   assert.equal(ok.status, 200);
   const pagina = await ok.text();
   assert.match(pagina, /Resenha &lt;b&gt;/); // nome do servidor escapado
-  assert.match(pagina, /SERVIDOR DOS CRIA/);
+  assert.match(pagina, /configuração dele separada/);
   assert.match(pagina, /seletor/);
   assert.equal(trocas.length, 1);
   assert.equal(trocas[0].code, 'abc');

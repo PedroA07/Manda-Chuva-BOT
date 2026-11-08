@@ -1,14 +1,16 @@
 // API que a interface web (repositório Interface-Manda-Chuva-Bot) usa pra configurar o bot
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import { noServidor } from './lib/contexto.js';
 import { conferirSteam, linkDaSteam } from './lib/redes.js';
 import { confirmarConvite, criarEstado, criarEstadoConvite, criarEstadoSteam, criarSessao, lerEstado, lerEstadoConvite, lerEstadoSteam, lerSessao, linkDoConvite, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
 import { VERSAO } from './lib/versao.js';
 
 const LOCAIS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const ORIGEM_LOCAL = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
-// Quem entra com a senha do painel (ou no PC sem senha) é admin; com o Discord, o bot vê o papel no servidor
-const NIVEL = { membro: 1, staff: 2, admin: 3 };
+// Quem entra com a senha do painel (ou no PC sem senha) é admin; com o Discord, o bot vê o papel no servidor da vez.
+// qualquer = só precisa estar logado (a lista de servidores da pessoa)
+const NIVEL = { qualquer: 0, membro: 1, staff: 2, admin: 3 };
 const comStatus = (status, mensagem) => Object.assign(new Error(mensagem), { status });
 
 /**
@@ -20,6 +22,8 @@ const comStatus = (status, mensagem) => Object.assign(new Error(mensagem), { sta
 export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
   // [quem pode, ação(corpo, url, quem), antes de ler o corpo(quem)]
   const rotas = {
+    // Servidores do bot em que a pessoa está, com o papel em cada um (o seletor do topo do painel)
+    'GET /api/servidores': ['qualquer', (_, __, quem) => (quem.tipo === 'senha' ? api.servidoresDe?.(null) : api.servidoresDe?.(quem.id)) ?? []],
     'GET /api/eu': ['membro', (_, __, quem) => api.eu(quem)],
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
     'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
@@ -36,7 +40,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'GET /api/redes': ['membro', (_, url) => api.cartoesDe(url.searchParams.get('id'))],
     'GET /api/publico': ['membro', () => api.publico()],
     'GET /api/turma': ['membro', (_, url) => api.turma(url.searchParams)],
-    'GET /api/estado': ['staff', (_, url) => api.estado(url.searchParams.get('servidor'))],
+    'GET /api/estado': ['staff', () => api.estado()],
     'POST /api/salvar': ['staff', (corpo, _, quem) => api.salvar(corpo, quem)],
     'POST /api/enviar': ['staff', (corpo) => api.enviar(corpo?.canalId)],
     'POST /api/apagar': ['staff', (corpo) => api.apagar(corpo?.mensagemId)],
@@ -63,19 +67,119 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
   // Volta do login da Steam: endereço público do bot (o mesmo que a Steam devolve no openid.return_to)
   const voltaDaSteam = () => new URL('/auth/steam/volta', process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || `http://localhost:${porta}`).href;
 
-  /** Quem está chamando: senha (admin) ou sessão do Discord (papel no servidor) */
-  async function identificar(req) {
+  /** Quem está chamando: senha (admin) ou sessão do Discord (papel no servidor da vez; livre = só precisa estar logado) */
+  async function identificar(req, livre = false) {
     const cab = String(req.headers.authorization ?? '');
     const token = /^Sessao (.+)$/.exec(cab)?.[1];
     if (token) {
       const s = lerSessao(token);
       if (!s) throw comStatus(401, 'Sua sessão acabou. Entre com o Discord de novo.');
-      const papel = await api.papelDe?.(s.id);
-      if (!papel) throw comStatus(403, 'Você não está no servidor do bot (ou ele está dormindo). Entre no servidor e tente de novo.');
+      const papel = livre ? 'membro' : await api.papelDe?.(s.id);
+      if (!papel) throw comStatus(403, 'Você não está nesse servidor (ou o bot está dormindo). Escolha outro lá em cima ou tente de novo.');
       return { tipo: 'discord', id: s.id, nome: s.nome, usuario: s.usuario, avatar: s.avatar, papel };
     }
     if (senha && !senhaConfere(cab, senha)) throw comStatus(401, 'Senha errada.');
     return { tipo: 'senha', papel: 'admin' };
+  }
+
+  /** Atende um pedido, já dentro do servidor escolhido (lib/contexto.js) */
+  async function atender(req, res, url, origem) {
+    // A hospedagem usa pra ver se o bot está vivo (e o MANTER_ACORDADO também). login = o site pode mostrar "Entrar com Discord"
+    // HEAD também: monitores de status (e o selo do README) perguntam só se está de pé
+    if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/saude')) {
+      if (req.method === 'HEAD') return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end();
+      return responder(res, 200, { ...api.saude(), versao: VERSAO, login: loginLigado() });
+    }
+
+    // ---------- Convite do bot (navegação do navegador): monta o link do Discord na hora ----------
+    if (req.method === 'GET' && url.pathname === '/convite') {
+      const d = api.dadosDoConvite?.();
+      if (!d) return pagina(res, 503, 'O bot está acordando', 'Na hospedagem grátis ele leva até 1 minuto pra acordar. Atualize esta página daqui a pouco.');
+      // Sem o segredo do OAuth não dá pra confirmar o código: vai o link simples
+      if (!loginLigado()) return redirecionar(res, linkDoConvite(d));
+      return redirecionar(res, linkDoConvite({ ...d, redirect: retorno(req), estado: criarEstadoConvite() }));
+    }
+
+    // ---------- Login com Discord (navegação do navegador, não é fetch) ----------
+    if (req.method === 'GET' && url.pathname === '/auth/entrar') {
+      const volta = String(url.searchParams.get('volta') ?? '').split('#')[0];
+      if (!voltaPermitida(volta, origens)) return responder(res, 400, { erro: 'Endereço de volta não liberado no PAINEL_ORIGENS.' });
+      if (!loginLigado()) return redirecionar(res, `${volta}#erro=login-desligado`);
+      return redirecionar(res, linkDoDiscord({ clientId: clientId(), redirect: retorno(req), estado: criarEstado(volta) }));
+    }
+    if (req.method === 'GET' && url.pathname === '/auth/callback') {
+      // Volta de um convite (o Discord manda guild_id junto quando o bot foi autorizado num servidor)
+      if (lerEstadoConvite(url.searchParams.get('state')) || url.searchParams.has('guild_id')) return await voltaDoConvite(req, res, url);
+      const e = lerEstado(url.searchParams.get('state'));
+      // Aberto direto (sem o state do botão) ou depois de 10 min: página com o caminho de volta, não um JSON cru
+      if (!e || !voltaPermitida(e.volta, origens)) {
+        const texto = url.searchParams.has('state')
+          ? 'Esse login demorou demais (o link vale 10 minutos).'
+          : 'Esta página é só a volta do login do Discord: ela não abre sozinha.';
+        return paginaDeVolta(res, texto);
+      }
+      if (url.searchParams.get('error') || !url.searchParams.get('code')) return redirecionar(res, `${e.volta}#erro=cancelado`);
+      try {
+        const u = await trocarCodigo({ code: url.searchParams.get('code'), clientId: clientId(), segredo: segredo(), redirect: retorno(req) });
+        const algum = api.servidoresDe ? (await api.servidoresDe(u.id)).length > 0 : !!(await api.papelDe?.(u.id));
+        if (!algum) return redirecionar(res, `${e.volta}#erro=fora-do-servidor`);
+        return redirecionar(res, `${e.volta}#sessao=${criarSessao(u)}`);
+      } catch (erro) {
+        console.error('Login com Discord:', erro.message);
+        return redirecionar(res, `${e.volta}#erro=discord`);
+      }
+    }
+
+    // ---------- Volta do login da Steam (Meu perfil › Redes) ----------
+    if (req.method === 'GET' && url.pathname === '/auth/steam/volta') {
+      const e = lerEstadoSteam(url.searchParams.get('estado'));
+      if (!e || !voltaPermitida(e.volta, origens)) return paginaDeVolta(res, 'Esse login da Steam demorou demais (o link vale 10 minutos).', 'vá em <b>Meu perfil › Redes</b> e clique em <b>Conectar com Steam</b> de novo');
+      const steamid = await conferirSteam(url.searchParams, voltaDaSteam());
+      if (!steamid) return redirecionar(res, `${e.volta}#redes=steam-erro`);
+      await api.ligarSteam?.(e.id, steamid);
+      return redirecionar(res, `${e.volta}#redes=steam-ok`);
+    }
+
+    // Imagens enviadas pelo painel: públicas (vão pro Discord de qualquer jeito) pra <img> conseguir mostrar
+    const anexo = req.method === 'GET' && /^\/anexos\/([0-9a-f]{16})(\.\w+)?$/.exec(url.pathname);
+    if (anexo) {
+      const a = await api.lerAnexo?.(anexo[1]);
+      if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
+      res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=86400, immutable' });
+      return res.end(a.buffer);
+    }
+
+    // Banner e foto de perfil que vêm de link: o site mostra por aqui, e não direto do link, pra quem escolheu a imagem
+    // não conseguir ver o IP de quem abre a lista de membros
+    const doPerfil = req.method === 'GET' && /^\/perfis\/(\d{15,25})\/(banner|foto)$/.exec(url.pathname);
+    if (doPerfil) {
+      const a = await api.imagemDoPerfil?.(doPerfil[1], doPerfil[2]);
+      if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
+      res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
+      return res.end(a.buffer);
+    }
+
+    // Banners "Eventos" com a placa desenhada pelo bot (nome do servidor de verdade)
+    const placa = req.method === 'GET' && /^\/placas\/([a-z]+)\.jpg$/.exec(url.pathname);
+    if (placa) {
+      const jpg = await api.placa?.(placa[1]);
+      if (!jpg) return responder(res, 404, { erro: 'Placa não encontrada.' });
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=3600' });
+      return res.end(jpg);
+    }
+
+    const chave = `${req.method} ${url.pathname}`;
+    const rota = rotas[chave];
+    if (!rota) return responder(res, 404, { erro: 'Não encontrado.' });
+    if (origem && !permitida(origem)) return responder(res, 403, { erro: `O site ${origem} não está no PAINEL_ORIGENS do bot.` });
+    // Cabeçalho próprio: um site qualquer aberto no navegador não consegue chamar a API
+    if (req.headers['x-painel'] !== '1') return responder(res, 403, { erro: 'Requisição bloqueada.' });
+    const [precisa, acao, antes] = rota;
+    const quem = await identificar(req, precisa === 'qualquer');
+    if (NIVEL[quem.papel] < NIVEL[precisa]) return responder(res, 403, { erro: 'Essa parte é só pra staff.' });
+    antes?.(quem);
+    const corpo = req.method === 'POST' ? await lerCorpo(req, limites[chave]) : null;
+    responder(res, 200, await acao(corpo, url, quem));
   }
 
   const servidor = createServer(async (req, res) => {
@@ -92,108 +196,17 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
       if (req.method === 'OPTIONS') {
         res.writeHead(origem && permitida(origem) ? 204 : 403, {
           'Access-Control-Allow-Methods': 'GET, POST',
-          'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Painel',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type, X-Painel, X-Servidor',
           'Access-Control-Max-Age': '600',
         });
         return res.end();
       }
 
       const url = new URL(req.url ?? '/', 'http://api');
-      // A hospedagem usa pra ver se o bot está vivo (e o MANTER_ACORDADO também). login = o site pode mostrar "Entrar com Discord"
-      // HEAD também: monitores de status (e o selo do README) perguntam só se está de pé
-      if ((req.method === 'GET' || req.method === 'HEAD') && (url.pathname === '/' || url.pathname === '/saude')) {
-        if (req.method === 'HEAD') return res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }).end();
-        return responder(res, 200, { ...api.saude(), versao: VERSAO, login: loginLigado() });
-      }
-
-      // ---------- Convite do bot (navegação do navegador): monta o link do Discord na hora ----------
-      if (req.method === 'GET' && url.pathname === '/convite') {
-        const d = api.dadosDoConvite?.();
-        if (!d) return pagina(res, 503, 'O bot está acordando', 'Na hospedagem grátis ele leva até 1 minuto pra acordar. Atualize esta página daqui a pouco.');
-        // Sem o segredo do OAuth não dá pra confirmar o código: vai o link simples
-        if (!loginLigado()) return redirecionar(res, linkDoConvite(d));
-        return redirecionar(res, linkDoConvite({ ...d, redirect: retorno(req), estado: criarEstadoConvite() }));
-      }
-
-      // ---------- Login com Discord (navegação do navegador, não é fetch) ----------
-      if (req.method === 'GET' && url.pathname === '/auth/entrar') {
-        const volta = String(url.searchParams.get('volta') ?? '').split('#')[0];
-        if (!voltaPermitida(volta, origens)) return responder(res, 400, { erro: 'Endereço de volta não liberado no PAINEL_ORIGENS.' });
-        if (!loginLigado()) return redirecionar(res, `${volta}#erro=login-desligado`);
-        return redirecionar(res, linkDoDiscord({ clientId: clientId(), redirect: retorno(req), estado: criarEstado(volta) }));
-      }
-      if (req.method === 'GET' && url.pathname === '/auth/callback') {
-        // Volta de um convite (o Discord manda guild_id junto quando o bot foi autorizado num servidor)
-        if (lerEstadoConvite(url.searchParams.get('state')) || url.searchParams.has('guild_id')) return await voltaDoConvite(req, res, url);
-        const e = lerEstado(url.searchParams.get('state'));
-        // Aberto direto (sem o state do botão) ou depois de 10 min: página com o caminho de volta, não um JSON cru
-        if (!e || !voltaPermitida(e.volta, origens)) {
-          const texto = url.searchParams.has('state')
-            ? 'Esse login demorou demais (o link vale 10 minutos).'
-            : 'Esta página é só a volta do login do Discord: ela não abre sozinha.';
-          return paginaDeVolta(res, texto);
-        }
-        if (url.searchParams.get('error') || !url.searchParams.get('code')) return redirecionar(res, `${e.volta}#erro=cancelado`);
-        try {
-          const u = await trocarCodigo({ code: url.searchParams.get('code'), clientId: clientId(), segredo: segredo(), redirect: retorno(req) });
-          if (!(await api.papelDe?.(u.id))) return redirecionar(res, `${e.volta}#erro=fora-do-servidor`);
-          return redirecionar(res, `${e.volta}#sessao=${criarSessao(u)}`);
-        } catch (erro) {
-          console.error('Login com Discord:', erro.message);
-          return redirecionar(res, `${e.volta}#erro=discord`);
-        }
-      }
-
-      // ---------- Volta do login da Steam (Meu perfil › Redes) ----------
-      if (req.method === 'GET' && url.pathname === '/auth/steam/volta') {
-        const e = lerEstadoSteam(url.searchParams.get('estado'));
-        if (!e || !voltaPermitida(e.volta, origens)) return paginaDeVolta(res, 'Esse login da Steam demorou demais (o link vale 10 minutos).', 'vá em <b>Meu perfil › Redes</b> e clique em <b>Conectar com Steam</b> de novo');
-        const steamid = await conferirSteam(url.searchParams, voltaDaSteam());
-        if (!steamid) return redirecionar(res, `${e.volta}#redes=steam-erro`);
-        await api.ligarSteam?.(e.id, steamid);
-        return redirecionar(res, `${e.volta}#redes=steam-ok`);
-      }
-
-      // Imagens enviadas pelo painel: públicas (vão pro Discord de qualquer jeito) pra <img> conseguir mostrar
-      const anexo = req.method === 'GET' && /^\/anexos\/([0-9a-f]{16})(\.\w+)?$/.exec(url.pathname);
-      if (anexo) {
-        const a = await api.lerAnexo?.(anexo[1]);
-        if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
-        res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=86400, immutable' });
-        return res.end(a.buffer);
-      }
-
-      // Banner e foto de perfil que vêm de link: o site mostra por aqui, e não direto do link, pra quem escolheu a imagem
-      // não conseguir ver o IP de quem abre a lista de membros
-      const doPerfil = req.method === 'GET' && /^\/perfis\/(\d{15,25})\/(banner|foto)$/.exec(url.pathname);
-      if (doPerfil) {
-        const a = await api.imagemDoPerfil?.(doPerfil[1], doPerfil[2]);
-        if (!a) return responder(res, 404, { erro: 'Imagem não encontrada.' });
-        res.writeHead(200, { 'Content-Type': a.tipo, 'Cache-Control': 'public, max-age=3600', 'X-Content-Type-Options': 'nosniff' });
-        return res.end(a.buffer);
-      }
-
-      // Banners "Eventos" com a placa desenhada pelo bot (nome do servidor de verdade)
-      const placa = req.method === 'GET' && /^\/placas\/([a-z]+)\.jpg$/.exec(url.pathname);
-      if (placa) {
-        const jpg = await api.placa?.(placa[1]);
-        if (!jpg) return responder(res, 404, { erro: 'Placa não encontrada.' });
-        res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'public, max-age=3600' });
-        return res.end(jpg);
-      }
-
-      const chave = `${req.method} ${url.pathname}`;
-      const rota = rotas[chave];
-      if (!rota) return responder(res, 404, { erro: 'Não encontrado.' });
-      if (origem && !permitida(origem)) return responder(res, 403, { erro: `O site ${origem} não está no PAINEL_ORIGENS do bot.` });
-      // Cabeçalho próprio: um site qualquer aberto no navegador não consegue chamar a API
-      if (req.headers['x-painel'] !== '1') return responder(res, 403, { erro: 'Requisição bloqueada.' });
-      const quem = await identificar(req);
-      const [precisa, acao, antes] = rota;
-      if (NIVEL[quem.papel] < NIVEL[precisa]) return responder(res, 403, { erro: 'Essa parte é só pra staff.' });
-      antes?.(quem);
-      const corpo = req.method === 'POST' ? await lerCorpo(req, limites[chave]) : null;
-      responder(res, 200, await acao(corpo, url, quem));
+      // Qual servidor: o painel manda X-Servidor; imagem de perfil e placa vêm com ?s=. Sem nenhum: o servidor padrão.
+      const pedido = String(req.headers['x-servidor'] ?? url.searchParams.get('s') ?? url.searchParams.get('servidor') ?? '').trim();
+      if (pedido && (!/^\d{15,25}$/.test(pedido) || api.temServidor?.(pedido) === false)) return responder(res, 404, { erro: 'O bot não está nesse servidor.' });
+      return await noServidor(pedido || null, () => atender(req, res, url, origem));
     } catch (erro) {
       if (!erro.status) console.error(erro);
       responder(res, erro.status ?? 500, { erro: erro.message ?? 'Erro interno.' });
@@ -215,9 +228,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     const info = /^\d{15,25}$/.test(id ?? '') ? await api.servidorDoConvite?.(id) : null;
     if (!info && !confirmado) return pagina(res, 502, 'Não deu certo', 'O Discord não confirmou o convite. Tente de novo daqui a pouco.');
     const nome = `<b>${esc(info?.nome || confirmado?.nome || 'seu servidor')}</b>`;
-    if (info?.ativo) return pagina(res, 200, 'Chegou na resenha!', `O Manda Chuva entrou em ${nome} e já está cuidando dele. Abra o painel pra configurar as cores, as boas-vindas e o resto.`, ['Abrir o painel', PAINEL()]);
-    const hoje = info?.atual ? ` (hoje: <b>${esc(info.atual)}</b>)` : '';
-    return pagina(res, 200, 'Chegou na resenha!', `O Manda Chuva entrou em ${nome}. Ele cuida de um servidor por vez${hoje}: pra ele passar a cuidar deste, escolha ${nome} no seletor lá em cima do painel e clique em <b>Salvar</b>.`, ['Abrir o painel', PAINEL()]);
+    return pagina(res, 200, 'Chegou na resenha!', `O Manda Chuva entrou em ${nome} e já está funcionando lá, com a configuração dele separada dos outros servidores. Abra o painel e escolha ${nome} no seletor lá em cima pra configurar as cores, as boas-vindas e o resto (ou copiar a configuração de outro servidor).`, ['Abrir o painel', PAINEL()]);
   }
 
   servidor.on('error', (erro) => console.error(`❌ Não consegui abrir a API na porta ${porta}:`, erro.message));

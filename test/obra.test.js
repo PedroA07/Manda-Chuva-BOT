@@ -5,6 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, test } from 'node:test';
+import { definirPadrao } from '../lib/contexto.js';
 
 process.env.DADOS_PASTA = mkdtempSync(join(tmpdir(), 'manda-chuva-obra-'));
 delete process.env.GIST_ID;
@@ -118,6 +119,7 @@ after(() => client.destroy());
 
 test('montar: cria o modelo, reaproveita pelo nome, fecha as categorias, botões de jogo e apaga só o que pode', async () => {
   ligar();
+  definirPadrao(G);
   const cfg = structuredClone(dados.config());
   cfg.servidorId = G;
   cfg.cores = [{ ...cfg.cores[4], cargoId: COR }];

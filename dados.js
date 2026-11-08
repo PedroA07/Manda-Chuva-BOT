@@ -1,9 +1,10 @@
 // Guarda a configuração e os painéis enviados: em dados/*.json ou, com GIST_ID e GIST_TOKEN definidos,
 // num Gist secreto do GitHub (pra hospedagem grátis que apaga os arquivos ao reiniciar, como a Render)
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PALAVROES } from './lib/automod.js';
+import { definirPadrao, noServidor, servidorAtual } from './lib/contexto.js';
 import { LIMITES as LIM_REGRAS, MAX_REGRAS, PADRAO_REGRAS } from './lib/regras.js';
 import { normalizarSrv, PADRAO_SRV } from './lib/servidor.js';
 
@@ -414,7 +415,7 @@ const SECOES = {
  * Confere e arruma uma config. Devolve { cfg, erros }, com os erros em português prontos pra mostrar.
  * Pedaço que não veio em "entrada" continua como está em "atual".
  */
-export function normalizar(entrada, atual = configAtual) {
+export function normalizar(entrada, atual = config()) {
   const e = obj(entrada);
   const a = obj(atual);
   const erros = [];
@@ -426,40 +427,115 @@ export function normalizar(entrada, atual = configAtual) {
 }
 
 // ---------- Onde fica salvo ----------
-let configAtual = normalizar(PADRAO, {}).cfg;
+// Cada servidor tem os próprios arquivos (s-<id>-config.json, s-<id>-perfis.json...): o prefixo entra sozinho quando tem
+// servidor na vez (lib/contexto.js). Estes são de todos: imagens, a lista de painéis enviados (cada um diz o servidor),
+// o registro dos servidores e os perfis vinculados.
+const GLOBAIS = /^(anexos\.json|anexo-|paineis\.json|servidores\.json|perfis-vinculados\.json)/;
+// O que era do servidor único (antes do bot cuidar de vários) e vira do servidor padrão na separação
+const DO_SERVIDOR = ['config.json', 'registro.json', 'perfis.json', 'aniversarios.json', 'estatisticas.json', 'avisos.json', 'ocorrencias.json', 'tickets.json'];
+
+/** Nome do arquivo do servidor da vez (ou do servidor id) */
+export const nomeNoServidor = (nome, id = servidorAtual()) => (!id || GLOBAIS.test(nome) ? nome : `s-${id}-${nome}`);
+
+/** Config de cada servidor ('' = sem servidor: os testes e a config de antes da separação) */
+const configs = new Map();
 let paineisAtuais = [];
 /** @type {{ id: string, token: string } | null} */
 let gist = null;
 
-export const config = () => configAtual;
+/** Config do servidor da vez. Servidor novo começa com a padrão. */
+export function config() {
+  const id = servidorAtual();
+  let cfg = configs.get(id ?? '');
+  if (!cfg) {
+    let bruto = null;
+    try {
+      bruto = interpretar(lerExtra('config.json'), nomeNoServidor('config.json', id));
+    } catch (erro) {
+      console.error(`⚠️  ${erro.message}`);
+    }
+    cfg = normalizar(bruto ?? PADRAO, {}).cfg;
+    if (id) cfg.servidorId = id;
+    configs.set(id ?? '', cfg);
+  }
+  return cfg;
+}
 export const paineis = () => paineisAtuais;
+
+/** Servidores que já têm algum dado guardado (ids) */
+export function servidoresGuardados() {
+  const ids = new Set([...configs.keys()].filter(Boolean));
+  let nomes = [];
+  if (gist) nomes = Object.keys(extras);
+  else {
+    try {
+      nomes = readdirSync(PASTA);
+    } catch {}
+  }
+  for (const n of nomes) {
+    const m = /^s-(\d{15,25})-/.exec(n);
+    if (m) ids.add(m[1]);
+  }
+  return [...ids];
+}
+/** A config de cada servidor guardado */
+export const todasAsConfigs = () => servidoresGuardados().map((id) => noServidor(id, config));
 
 export async function carregar() {
   const { GIST_ID, GIST_TOKEN } = process.env;
   gist = GIST_ID && GIST_TOKEN ? { id: GIST_ID.trim(), token: GIST_TOKEN.trim() } : null;
-  let bruto, lista;
+  configs.clear();
+  definirPadrao(null);
+  let lista;
   if (gist) {
-    const arquivos = await lerGist();
-    bruto = interpretar(arquivos['config.json']?.conteudo, 'config.json do Gist');
-    lista = interpretar(arquivos['paineis.json']?.conteudo, 'paineis.json do Gist');
-    extras = arquivos;
+    extras = await lerGist();
+    lista = interpretar(extras['paineis.json']?.conteudo, 'paineis.json do Gist');
     console.log(`💾 Configuração guardada no Gist ${gist.id}`);
   } else {
     mkdirSync(PASTA, { recursive: true });
-    bruto = lerJson(ARQ_CONFIG);
+    extras = {};
     lista = lerJson(ARQ_PAINEIS);
   }
-  const { cfg, erros } = normalizar(bruto ?? PADRAO);
-  if (bruto && erros.length) console.warn('⚠️  Avisos na configuração:\n- ' + erros.join('\n- '));
   paineisAtuais = Array.isArray(lista) ? lista.filter((x) => x?.servidorId && x?.canalId && x?.mensagemId) : [];
-  if (bruto) configAtual = cfg;
-  else salvarConfig(cfg);
+  const bruto = interpretar(lerExtra('config.json'), gist ? 'config.json do Gist' : fileURLToPath(ARQ_CONFIG));
+  const { cfg, erros } = normalizar(bruto ?? PADRAO, {});
+  if (bruto && erros.length) console.warn('⚠️  Avisos na configuração:\n- ' + erros.join('\n- '));
+  configs.set('', cfg);
+  if (!bruto) salvarConfig(cfg);
+  await separarPorServidor(bruto);
 }
 
+/**
+ * Uma vez só: o que era do servidor único vira do servidor padrão (s-<id>-*), e servidores.json anota qual é ele.
+ * Os arquivos antigos ficam como cópia de segurança (o código de antes ainda funciona com eles, se precisar voltar).
+ */
+async function separarPorServidor(legado) {
+  const reg = interpretar(lerExtra('servidores.json'), 'servidores.json');
+  if (reg) return definirPadrao(reg.padrao ?? null);
+  const id = typeof legado?.servidorId === 'string' ? legado.servidorId : null;
+  const copias = {};
+  if (id) {
+    for (const nome of DO_SERVIDOR) {
+      const texto = await lerExtraGrande(nome);
+      if (texto != null) copias[`s-${id}-${nome}`] = texto;
+    }
+  }
+  copias['servidores.json'] = JSON.stringify({ padrao: id, separadoEm: new Date().toISOString() }, null, 2);
+  const erro = await gravarArquivos(copias);
+  if (erro) throw new Error(`não consegui separar os dados por servidor (${erro})`);
+  if (id) console.log(`🗂️  Dados separados por servidor: o que já existia ficou com o servidor ${id}.`);
+  definirPadrao(id);
+}
+
+/** Troca a config do servidor da vez e grava */
 export function salvarConfig(cfg) {
-  configAtual = cfg;
-  if (gist) enviarGist();
-  else gravar(ARQ_CONFIG, cfg);
+  const id = servidorAtual();
+  if (id) cfg.servidorId = id;
+  configs.set(id ?? '', cfg);
+  if (gist) {
+    sujos.add(id ?? '');
+    enviarGist();
+  } else gravar(new URL(nomeNoServidor('config.json', id), PASTA), cfg);
 }
 
 export function salvarPaineis(lista) {
@@ -474,34 +550,38 @@ export async function esperarGravacao() {
   return erroGist;
 }
 
-// ---------- Arquivos extras (anexos e, nas próximas versões, aniversários e ocorrências) ----------
+// ---------- Arquivos extras (perfis, tickets, aniversários, imagens...) ----------
 // No Gist, arquivo grande (> 1 MB) vem cortado na leitura inicial: só baixa quando alguém pedir.
 /** @type {Record<string, { conteudo?: string, raw?: string }>} */
 let extras = {};
 
-/** Texto de um arquivo extra já carregado (pequeno), ou null */
+/** Texto de um arquivo extra do servidor da vez, já carregado (pequeno), ou null */
 export function lerExtra(nome) {
-  return gist ? (extras[nome]?.conteudo ?? null) : lerTexto(new URL(nome, PASTA));
+  const arq = nomeNoServidor(nome);
+  return gist ? (extras[arq]?.conteudo ?? null) : lerTexto(new URL(arq, PASTA));
 }
 
-/** Texto de um arquivo extra, baixando do Gist se precisar, ou null */
+/** Texto de um arquivo extra do servidor da vez, baixando do Gist se precisar, ou null */
 export async function lerExtraGrande(nome) {
-  if (!gist) return lerTexto(new URL(nome, PASTA));
-  const e = extras[nome];
+  const arq = nomeNoServidor(nome);
+  if (!gist) return lerTexto(new URL(arq, PASTA));
+  const e = extras[arq];
   if (!e) return null;
   if (e.conteudo == null) {
     const r = await fetch(e.raw, { signal: AbortSignal.timeout(30_000) });
-    if (!r.ok) throw new Error(`o GitHub respondeu ${r.status} ao baixar ${nome}`);
+    if (!r.ok) throw new Error(`o GitHub respondeu ${r.status} ao baixar ${arq}`);
     e.conteudo = await r.text();
   }
   return e.conteudo;
 }
 
 /**
- * Grava (texto) ou apaga (null) arquivos extras. Devolve a mensagem de erro, ou null se deu certo.
+ * Grava (texto) ou apaga (null) arquivos extras do servidor da vez. Devolve a mensagem de erro, ou null se deu certo.
  * @param {Record<string, string | null>} arquivos
  */
-export async function gravarExtras(arquivos) {
+export const gravarExtras = (arquivos) => gravarArquivos(Object.fromEntries(Object.entries(arquivos).map(([nome, texto]) => [nomeNoServidor(nome), texto])));
+
+async function gravarArquivos(arquivos) {
   if (!gist) {
     mkdirSync(PASTA, { recursive: true });
     for (const [nome, texto] of Object.entries(arquivos)) {
@@ -557,6 +637,8 @@ const gravar = (arquivo, conteudo) => gravarTexto(arquivo, JSON.stringify(conteu
 // ---------- Gist do GitHub ----------
 let envio = Promise.resolve();
 let esperando = false;
+/** Configs que mudaram e ainda não foram pro Gist ('' = a de antes da separação) */
+const sujos = new Set();
 /** @type {string | null} */
 let erroGist = null;
 
@@ -589,21 +671,27 @@ async function lerGist() {
   return arquivos;
 }
 
-// Manda o estado atual pro Gist, um envio por vez. Se já tem um esperando na fila, ele leva o estado mais novo.
+// Manda pro Gist as configs que mudaram e a lista de painéis, um envio por vez. Se já tem um esperando na fila, ele leva
+// o estado mais novo.
 function enviarGist() {
   if (esperando) return;
   esperando = true;
   envio = envio.then(async () => {
     esperando = false;
+    const chaves = [...sujos];
+    sujos.clear();
+    const files = { 'paineis.json': { content: JSON.stringify(paineisAtuais, null, 2) } };
+    for (const k of chaves) {
+      const nome = nomeNoServidor('config.json', k || null);
+      const texto = JSON.stringify(configs.get(k), null, 2);
+      files[nome] = { content: texto };
+      extras[nome] = { conteudo: texto };
+    }
     try {
-      await chamarGist('PATCH', {
-        files: {
-          'config.json': { content: JSON.stringify(configAtual, null, 2) },
-          'paineis.json': { content: JSON.stringify(paineisAtuais, null, 2) },
-        },
-      });
+      await chamarGist('PATCH', { files });
       erroGist = null;
     } catch (erro) {
+      for (const k of chaves) sujos.add(k);
       erroGist = erro.message;
       console.error('⚠️  Não consegui salvar no Gist:', erro.message);
     }
