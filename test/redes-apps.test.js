@@ -9,8 +9,8 @@ import {
 } from '../lib/redes.js';
 import { criarSessao } from '../lib/sessao.js';
 
-process.env.SPOTIFY_CLIENT_ID = 'sp-id';
-process.env.SPOTIFY_CLIENT_SECRET = 'sp-segredo';
+
+
 process.env.TWITCH_CLIENT_ID = 'tw-id';
 process.env.TWITCH_CLIENT_SECRET = 'tw-segredo';
 
@@ -55,26 +55,23 @@ test('Spotify pelo status do Discord: a de agora e as últimas 5, sem repetir; d
   assert.deepEqual(ultimasOuvidas('u'), []);
 });
 
-test('Spotify: cartão com o perfil público e as playlists (token do app, sem login da pessoa)', async () => {
-  esquecerTokens();
+test('Spotify: perfil pela prévia pública da página (sem API: o modo de desenvolvimento não tem mais perfil de outra pessoa)', async () => {
+  const pagina = (titulo, tipo = 'profile') => ({ ok: true, status: 200, text: async () => `<html><head><meta property="og:title" content="${titulo}"/><meta property="og:type" content="${tipo}"/><meta property="og:image" content="https://i.scdn.co/image/ab67"/></head></html>` });
   const net = internet({
-    'https://accounts.spotify.com/api/token': (_, o) => {
-      assert.equal(o.headers.Authorization, `Basic ${Buffer.from('sp-id:sp-segredo').toString('base64')}`);
-      return responde({ access_token: 'tk', expires_in: 3600 });
-    },
-    'https://api.spotify.com/v1/users/pedrinho123/playlists': () => responde({ total: 7, items: [{ name: 'Resenha', public: true, images: [{ url: 'https://i.scdn.co/image/p1' }], tracks: { total: 42 } }, { name: 'Secreta', public: false }] }),
-    'https://api.spotify.com/v1/users/pedrinho123': (_, o) => (assert.equal(o.headers.Authorization, 'Bearer tk'), responde({ id: 'pedrinho123', display_name: 'Pedrinho', followers: { total: 1234 } })),
+    'https://open.spotify.com/user/pedrinho123': () => pagina('Pedrinho &amp; Cia &#x27;oficial&#x27;'),
+    'https://open.spotify.com/user/fora': () => ({ ok: false, status: 503, text: async () => '' }),
   });
-  const c = await cartaoDaRede('spotify', { id: 'pedrinho123', nome: 'Pedrinho' }, { buscar: net.buscar });
-  assert.equal(c.user, 'Pedrinho');
+  const c = await cartaoDaRede('spotify', { id: 'pedrinho123', nome: 'antigo' }, { buscar: net.buscar });
+  assert.equal(c.user, "Pedrinho & Cia 'oficial'");
   assert.equal(c.link, 'https://open.spotify.com/user/pedrinho123');
-  assert.deepEqual(c.stats, [['1.234', 'seguidores'], ['7', 'playlists']]);
-  assert.deepEqual(c.itens, [{ t: 'Resenha', src: 'https://i.scdn.co/image/p1', s: '42 músicas' }]);
-  // Perfil que não existe
-  const sumiu = await cartaoDaRede('spotify', { id: 'ninguem' }, { buscar: net.buscar });
-  assert.equal(sumiu.status, 'NÃO ACHEI');
-  // O token foi pedido uma vez só
-  assert.equal(net.pedidos.filter((p) => p.url.startsWith('https://accounts.spotify.com')).length, 1);
+  assert.equal(c.status, 'SPOTIFY');
+  assert.ok(net.pedidos.every((p) => !p.url.includes('api.spotify.com')));
+  // Perfil que não existe (404)
+  assert.equal((await cartaoDaRede('spotify', { id: 'ninguem' }, { buscar: net.buscar })).status, 'NÃO ACHEI');
+  // Spotify fora do ar: fica o nome guardado, sem aviso de erro (as músicas do status entram por cima)
+  const fora = await cartaoDaRede('spotify', { id: 'fora', nome: 'Fulano' }, { buscar: net.buscar });
+  assert.equal(fora.user, 'Fulano');
+  assert.equal(fora.aviso, undefined);
 });
 
 test('Twitch: cartão ao vivo (miniatura, jogo, quem assiste) e fora do ar (vídeos recentes)', async () => {
@@ -150,4 +147,19 @@ test('API: login da Twitch volta pro mesmo servidor em que a pessoa clicou', asy
   const cancelou = await fetchDeVerdade(`${base}/auth/twitch/volta?error=access_denied&state=${encodeURIComponent(link.searchParams.get('state'))}`, { redirect: 'manual' });
   assert.equal(cancelou.headers.get('location'), 'https://site.exemplo/painel.html#redes=twitch-erro');
   assert.equal(ligados.length, 1);
+});
+
+test('Steam: jogo novo pega a cápsula pelo endereço que a loja diz (o antigo dá 404)', async () => {
+  const xml = '<profile><steamID>Pedr0</steamID><privacyState>public</privacyState><onlineState>online</onlineState></profile>';
+  const net = internet({
+    'https://steamcommunity.com/profiles/': () => ({ ok: true, status: 200, text: async () => xml }),
+    'https://api.steampowered.com/IPlayerService/GetSteamLevel/': () => responde({ response: { player_level: 66 } }),
+    'https://api.steampowered.com/IPlayerService/GetOwnedGames/': () => responde({ response: { game_count: 557, games: [{ playtime_forever: 600 }] } }),
+    'https://api.steampowered.com/IPlayerService/GetRecentlyPlayedGames/': () => responde({ response: { games: [{ appid: 3751950, name: "Assassin's Creed Black Flag Resynced", playtime_forever: 6720 }, { appid: 730, name: 'Counter-Strike 2', playtime_forever: 60 }] } }),
+    'https://api.steampowered.com/IStoreBrowseService/GetItems/': () => responde({ response: { store_items: [{ appid: 3751950, assets: { asset_url_format: 'steam/apps/3751950/${FILENAME}?t=1', small_capsule: 'abc/capsule_231x87.jpg' } }] } }),
+  });
+  const c = await cartaoDaRede('steam', { id: '76561197960287930' }, { buscar: net.buscar, chaveSteam: 'k' });
+  assert.equal(c.itens[0].src, 'https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/3751950/abc/capsule_231x87.jpg');
+  // Sem resposta da loja pra esse: o endereço de sempre
+  assert.equal(c.itens[1].src, 'https://cdn.cloudflare.steamstatic.com/steam/apps/730/capsule_184x69.jpg');
 });

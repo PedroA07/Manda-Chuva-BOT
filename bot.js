@@ -1934,14 +1934,15 @@ const vinculoDe = (id) => ({ on: !!lerPerfis()[id]?.vinc, existe: !!lerVinculado
 
 /** Spotify pelo link do perfil: confere no Spotify que existe e liga */
 async function ligarPeloLink(userId, texto) {
-  if (!temSpotify()) throw comStatus(503, 'O Spotify ainda não foi ligado no bot.');
   const id = idDoSpotify(texto);
   if (!id) return { erro: 'Cola o link do seu perfil do Spotify (no app: seu perfil › ⋯ › Compartilhar › Copiar link do perfil).' };
   let conta;
   try {
     conta = await perfilSpotify(id);
-  } catch {
-    throw comStatus(503, 'O Spotify não respondeu agora. Tenta de novo daqui a pouco.');
+  } catch (erro) {
+    // A página do Spotify não respondeu: liga com o id mesmo (o link já tem o formato certo; o nome vem depois)
+    console.error('Spotify (prévia do perfil):', erro.message);
+    conta = { id, nome: id };
   }
   if (!conta) return { erro: 'Não achei esse perfil no Spotify. Confere o link.' };
   return ligarSpotify(userId, conta);
@@ -2232,7 +2233,7 @@ function comOuvindo(cartao, userId) {
   if (cartao.rede !== 'spotify') return cartao;
   const agora = ouvindoAgora(userId);
   const ultimas = ultimasOuvidas(userId);
-  if (!ultimas.length) return cartao;
+  if (!ultimas.length) return { ...cartao, aviso: cartao.aviso ?? 'Nenhuma música no status do Discord ainda.' };
   const itens = ultimas.slice(0, 3).map((x) => ({ t: x.artista ? `${x.t} — ${x.artista}` : x.t, src: x.capa, s: agora?.id === x.id ? 'tocando agora' : haQuanto(x.quando) }));
   return { ...cartao, status: agora ? 'OUVINDO AGORA' : cartao.status, itens, rotulo: agora ? 'OUVINDO AGORA' : 'OUVIDAS RECENTEMENTE' };
 }
