@@ -43,7 +43,7 @@ import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
 import { apagarPerfil, DE_EVENTO, definirAnexo, favoritosPublicos, lerPerfis, ligarSteam, MEDALHAS, medalhasDe, mudarFavorito, mudarRede, perfilDe, redesPublicas, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
 import { cartaoGuardado, esquecerCartao } from './lib/redes.js';
-import { acharCapa, capaDaGaleria, capaPermitida, podeProcurar } from './lib/capas.js';
+import { acharCapa, capaDaGaleria, capaPermitida, capaSugerida, podeProcurar, podeSugerir, sugerir, TIPOS_FAVORITOS } from './lib/capas.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -92,7 +92,11 @@ const NO_AR_DESDE = new Date().toISOString(); // /saude: confere se o deploy nov
 const comStatus = (status, mensagem) => Object.assign(new Error(mensagem), { status });
 const hexParaInt = (hex) => parseInt(hex.slice(1), 16);
 const intParaHex = (n) => `#${n.toString(16).padStart(6, '0').toUpperCase()}`;
-const linkConvite = () => client.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES });
+const conviteDireto = () => client.generateInvite({ scopes: [OAuth2Scopes.Bot, OAuth2Scopes.ApplicationsCommands], permissions: PERMISSOES });
+// O link que os sites mostram passa pelo /convite da API: ela monta o link do Discord na hora, pelo fluxo com código
+// (o único que funciona com "Requires OAuth2 Code Grant" ligado no Developer Portal). Sem endereço público, o link direto.
+const urlPublica = () => process.env.URL_PUBLICA || process.env.RENDER_EXTERNAL_URL || '';
+const linkConvite = () => (urlPublica() ? new URL('/convite', urlPublica()).href : conviteDireto());
 
 /** Servidor configurado (ou o do id passado), se o bot estiver nele. @param {string | null} [id] */
 function servidor(id = dados.config().servidorId) {
@@ -2302,6 +2306,14 @@ async function donoDoBot() {
 export const api = {
   saude: () => ({ ok: true, bot: client.isReady() ? 'online' : 'offline', desde: NO_AR_DESDE, convite: client.isReady() ? linkConvite() : null }),
   clientId: () => client.application?.id ?? client.user?.id ?? null,
+  // /convite da API: o que vai no link do Discord
+  dadosDoConvite: () => (client.isReady() ? { clientId: client.application?.id ?? client.user.id, permissoes: PERMISSOES.reduce((a, b) => a | b, 0n).toString() } : null),
+  // Depois do convite: o bot está no servidor? (o aviso do Discord pode chegar um pouco depois da confirmação)
+  async servidorDoConvite(id) {
+    for (let i = 0; i < 16 && client.isReady() && !client.guilds.cache.has(id); i++) await new Promise((ok) => setTimeout(ok, 500));
+    const g = client.isReady() ? client.guilds.cache.get(id) : null;
+    return g ? { nome: g.name, ativo: dados.config().servidorId === g.id, atual: servidor()?.name ?? null } : null;
+  },
   papelDe,
 
   // Quem entrou no site: papel, conta, perfil, medalhas e números (com a senha do painel: só o papel)
@@ -2349,9 +2361,20 @@ export const api = {
     const m = await servidor()?.members.fetch(quem.id).catch(() => null);
     if (!m) throw comStatus(403, 'Você não está no servidor do bot.');
     if (corpo?.acao === 'add' && !podeProcurar(m.id)) throw comStatus(429, 'Calma aí: dá pra adicionar até 15 favoritos a cada 10 minutos.');
-    const r = await mudarFavorito(m.id, corpo, (tipo, nome) => acharCapa(tipo, nome));
+    // Escolheu uma sugestão: fica a capa dela (se foi o bot que sugeriu); escreveu à mão: o bot procura
+    const escolhida = corpo?.acao === 'add' && capaSugerida(corpo.capa) ? corpo.capa : null;
+    const r = await mudarFavorito(m.id, corpo, (tipo, nome) => escolhida ?? acharCapa(tipo, nome));
     if (r.erro) throw comStatus(400, r.erro);
     return { ok: true, perfil: r.perfil };
+  },
+
+  // Sugestões enquanto a pessoa digita um favorito (nome certo e capa)
+  async sugestoesDeFavorito(quem, params) {
+    const tipo = params.get('tipo');
+    if (!TIPOS_FAVORITOS.includes(tipo)) throw comStatus(400, 'Essa lista de favoritos não existe.');
+    const itens = await sugerir(tipo, params.get('q'), { podeBuscar: () => podeSugerir(quem.id ?? 'senha') });
+    if (!itens) throw comStatus(429, 'Calma aí, digitando rápido demais. Espera um pouquinho.');
+    return { itens };
   },
 
   // Redes de Meu perfil: ligar (Letterboxd, Instagram), desligar ou esconder

@@ -2,7 +2,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { conferirSteam, linkDaSteam } from './lib/redes.js';
-import { criarEstado, criarEstadoSteam, criarSessao, lerEstado, lerEstadoSteam, lerSessao, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
+import { confirmarConvite, criarEstado, criarEstadoConvite, criarEstadoSteam, criarSessao, lerEstado, lerEstadoConvite, lerEstadoSteam, lerSessao, linkDoConvite, linkDoDiscord, trocarCodigo, voltaPermitida } from './lib/sessao.js';
 import { VERSAO } from './lib/versao.js';
 
 const LOCAIS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -24,6 +24,7 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     'POST /api/eu/perfil': ['membro', (corpo, _, quem) => api.salvarPerfil(quem, corpo)],
     'POST /api/eu/anexo': ['membro', (corpo, _, quem) => api.anexoDoPerfil(quem, corpo), (quem) => api.podeEnviarAnexo(quem)],
     'POST /api/eu/favoritos': ['membro', (corpo, _, quem) => api.favorito(quem, corpo)],
+    'GET /api/favoritos/sugestoes': ['membro', (_, url, quem) => api.sugestoesDeFavorito(quem, url.searchParams)],
     // Redes: Letterboxd e Instagram pelo nome; Steam pelo login da própria Steam (volta em /auth/steam/volta)
     'POST /api/eu/redes': ['membro', (corpo, _, quem) => api.rede(quem, corpo)],
     'POST /api/eu/redes/steam': ['membro', (corpo, _, quem) => {
@@ -105,6 +106,15 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
         return responder(res, 200, { ...api.saude(), versao: VERSAO, login: loginLigado() });
       }
 
+      // ---------- Convite do bot (navegação do navegador): monta o link do Discord na hora ----------
+      if (req.method === 'GET' && url.pathname === '/convite') {
+        const d = api.dadosDoConvite?.();
+        if (!d) return pagina(res, 503, 'O bot está acordando', 'Na hospedagem grátis ele leva até 1 minuto pra acordar. Atualize esta página daqui a pouco.');
+        // Sem o segredo do OAuth não dá pra confirmar o código: vai o link simples
+        if (!loginLigado()) return redirecionar(res, linkDoConvite(d));
+        return redirecionar(res, linkDoConvite({ ...d, redirect: retorno(req), estado: criarEstadoConvite() }));
+      }
+
       // ---------- Login com Discord (navegação do navegador, não é fetch) ----------
       if (req.method === 'GET' && url.pathname === '/auth/entrar') {
         const volta = String(url.searchParams.get('volta') ?? '').split('#')[0];
@@ -113,6 +123,8 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
         return redirecionar(res, linkDoDiscord({ clientId: clientId(), redirect: retorno(req), estado: criarEstado(volta) }));
       }
       if (req.method === 'GET' && url.pathname === '/auth/callback') {
+        // Volta de um convite (o Discord manda guild_id junto quando o bot foi autorizado num servidor)
+        if (lerEstadoConvite(url.searchParams.get('state')) || url.searchParams.has('guild_id')) return await voltaDoConvite(req, res, url);
         const e = lerEstado(url.searchParams.get('state'));
         // Aberto direto (sem o state do botão) ou depois de 10 min: página com o caminho de volta, não um JSON cru
         if (!e || !voltaPermitida(e.volta, origens)) {
@@ -188,6 +200,26 @@ export function iniciarApi({ porta, senha, origens, api, silencioso = false }) {
     }
   });
 
+  /** Depois do "Autorizar" do convite: confirma com o Discord e conta em que servidor o bot entrou */
+  async function voltaDoConvite(req, res, url) {
+    if (!lerEstadoConvite(url.searchParams.get('state'))) return pagina(res, 400, 'Convite vencido', 'Esse convite demorou demais (o link vale 10 minutos). Clique em <b>Adicionar ao Discord</b> de novo.');
+    const code = url.searchParams.get('code');
+    if (url.searchParams.get('error') || !code) return pagina(res, 200, 'Convite cancelado', 'Nada mudou. Quando quiser, é só clicar em <b>Adicionar ao Discord</b> de novo.');
+    let confirmado = null;
+    try {
+      confirmado = await confirmarConvite({ code, clientId: clientId(), segredo: segredo(), redirect: retorno(req) });
+    } catch (erro) {
+      console.error('Convite:', erro.message);
+    }
+    const id = confirmado?.id ?? url.searchParams.get('guild_id');
+    const info = /^\d{15,25}$/.test(id ?? '') ? await api.servidorDoConvite?.(id) : null;
+    if (!info && !confirmado) return pagina(res, 502, 'Não deu certo', 'O Discord não confirmou o convite. Tente de novo daqui a pouco.');
+    const nome = `<b>${esc(info?.nome || confirmado?.nome || 'seu servidor')}</b>`;
+    if (info?.ativo) return pagina(res, 200, 'Chegou na resenha!', `O Manda Chuva entrou em ${nome} e já está cuidando dele. Abra o painel pra configurar as cores, as boas-vindas e o resto.`, ['Abrir o painel', PAINEL()]);
+    const hoje = info?.atual ? ` (hoje: <b>${esc(info.atual)}</b>)` : '';
+    return pagina(res, 200, 'Chegou na resenha!', `O Manda Chuva entrou em ${nome}. Ele cuida de um servidor por vez${hoje}: pra ele passar a cuidar deste, escolha ${nome} no seletor lá em cima do painel e clique em <b>Salvar</b>.`, ['Abrir o painel', PAINEL()]);
+  }
+
   servidor.on('error', (erro) => console.error(`❌ Não consegui abrir a API na porta ${porta}:`, erro.message));
   servidor.listen(porta, senha ? '0.0.0.0' : '127.0.0.1', () => {
     if (silencioso) return;
@@ -204,17 +236,22 @@ function retorno(req) {
   return new URL('/auth/callback', base).href;
 }
 
-/** Página simples (no visual do painel) com o botão pra voltar e entrar de novo */
-function paginaDeVolta(res, texto, acao = 'clique em <b>Entrar com Discord</b>') {
-  const painel = process.env.URL_PAINEL_PAGINA || 'https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html';
-  res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
-  res.end(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Manda Chuva · login</title>
+const PAINEL = () => process.env.URL_PAINEL_PAGINA || 'https://pedroa07.github.io/Interface-Manda-Chuva-Bot/painel.html';
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** Página simples (no visual do painel): título, texto e um botão */
+function pagina(res, status, titulo, texto, [rotulo, link] = ['Voltar pro painel', PAINEL()]) {
+  res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+  res.end(`<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Manda Chuva · ${esc(titulo)}</title>
 <body style="margin:0;min-height:100vh;display:grid;place-items:center;background:#1f2a5c;font:500 16px/1.5 system-ui,sans-serif;color:#1b1f33">
 <div style="max-width:420px;margin:20px;padding:28px;background:#fffcf4;border:3px solid #1b1f33;border-radius:18px;box-shadow:8px 8px 0 #0e1430;display:grid;gap:14px">
-<b style="font-size:22px">Quase lá!</b><span>${texto} Volte pro painel e ${acao}.</span>
-<a href="${painel}" style="padding:12px;text-align:center;background:#5865f2;color:#fff;border:2px solid #1b1f33;border-radius:12px;font-weight:800;text-decoration:none">Voltar pro painel</a>
+<b style="font-size:22px">${esc(titulo)}</b><span>${texto}</span>
+<a href="${esc(link)}" style="padding:12px;text-align:center;background:#5865f2;color:#fff;border:2px solid #1b1f33;border-radius:12px;font-weight:800;text-decoration:none">${esc(rotulo)}</a>
 </div></body></html>`);
 }
+
+/** Login que voltou errado: página com o caminho de volta */
+const paginaDeVolta = (res, texto, acao = 'clique em <b>Entrar com Discord</b>') => pagina(res, 400, 'Quase lá!', `${texto} Volte pro painel e ${acao}.`);
 
 function redirecionar(res, para) {
   res.writeHead(302, { Location: para, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });

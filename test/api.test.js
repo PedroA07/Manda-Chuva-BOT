@@ -197,3 +197,81 @@ test('Steam: link só pra quem entrou com Discord e volta liberada; a volta liga
   assert.match(await p.text(), /Conectar com Steam/);
   assert.equal(ligados.length, 1);
 });
+
+test('convite: bot dormindo mostra a página de espera; sem o segredo do OAuth vai o link simples do Discord', async (t) => {
+  let acordado = false;
+  const api = { saude: () => ({}), dadosDoConvite: () => (acordado ? { clientId: '42', permissoes: '8' } : null) };
+  const { servidor, base } = await subir(api);
+  t.after(() => servidor.close());
+  const dormindo = await fetch(`${base}/convite`, { redirect: 'manual' });
+  assert.equal(dormindo.status, 503);
+  assert.match(await dormindo.text(), /acordando/);
+  acordado = true;
+  const r = await fetch(`${base}/convite`, { redirect: 'manual' });
+  assert.equal(r.status, 302);
+  const link = new URL(r.headers.get('location'));
+  assert.equal(link.origin + link.pathname, 'https://discord.com/oauth2/authorize');
+  assert.equal(link.searchParams.get('client_id'), '42');
+  assert.equal(link.searchParams.get('scope'), 'bot applications.commands');
+  assert.equal(link.searchParams.get('permissions'), '8');
+  assert.equal(link.searchParams.get('response_type'), null);
+});
+
+test('convite com login ligado: vai pelo código (funciona com "Requires OAuth2 Code Grant") e a volta conta onde o bot entrou', async (t) => {
+  const antes = process.env.DISCORD_CLIENT_SECRET;
+  process.env.DISCORD_CLIENT_SECRET = 'segredo-de-teste';
+  t.after(() => (process.env.DISCORD_CLIENT_SECRET = antes ?? ''));
+  const perguntados = [];
+  const api = {
+    saude: () => ({}),
+    clientId: () => '42',
+    dadosDoConvite: () => ({ clientId: '42', permissoes: '8' }),
+    servidorDoConvite: async (id) => (perguntados.push(id), { nome: 'Resenha <b>', ativo: false, atual: 'SERVIDOR DOS CRIA' }),
+  };
+  const { servidor, base } = await subir(api);
+  t.after(() => servidor.close());
+  const link = new URL((await fetch(`${base}/convite`, { redirect: 'manual' })).headers.get('location'));
+  assert.equal(link.searchParams.get('response_type'), 'code');
+  assert.equal(new URL(link.searchParams.get('redirect_uri')).pathname, '/auth/callback');
+  const state = link.searchParams.get('state');
+
+  // O Discord volta com o código; o bot troca o código (é isso que coloca o bot no servidor)
+  const fetchDeVerdade = globalThis.fetch;
+  const trocas = [];
+  globalThis.fetch = async (url, o) =>
+    String(url) === 'https://discord.com/api/v10/oauth2/token'
+      ? (trocas.push(Object.fromEntries(new URLSearchParams(String(o.body)))), Response.json({ access_token: 'x', guild: { id: '123456789012345678', name: 'Resenha' } }))
+      : fetchDeVerdade(url, o);
+  t.after(() => (globalThis.fetch = fetchDeVerdade));
+  const ok = await fetchDeVerdade(`${base}/auth/callback?code=abc&state=${encodeURIComponent(state)}&guild_id=123456789012345678&permissions=8`, { redirect: 'manual' });
+  assert.equal(ok.status, 200);
+  const pagina = await ok.text();
+  assert.match(pagina, /Resenha &lt;b&gt;/); // nome do servidor escapado
+  assert.match(pagina, /SERVIDOR DOS CRIA/);
+  assert.match(pagina, /seletor/);
+  assert.equal(trocas.length, 1);
+  assert.equal(trocas[0].code, 'abc');
+  assert.equal(trocas[0].client_secret, 'segredo-de-teste');
+  assert.deepEqual(perguntados, ['123456789012345678']);
+
+  // Cancelou no Discord: nada muda e nada é trocado
+  const cancelou = await fetchDeVerdade(`${base}/auth/callback?error=access_denied&state=${encodeURIComponent(state)}`, { redirect: 'manual' });
+  assert.equal(cancelou.status, 200);
+  assert.match(await cancelou.text(), /Convite cancelado/);
+  // State mexido: convite vencido
+  const vencido = await fetchDeVerdade(`${base}/auth/callback?code=abc&state=lixo&guild_id=123456789012345678`, { redirect: 'manual' });
+  assert.equal(vencido.status, 400);
+  assert.match(await vencido.text(), /Convite vencido/);
+  assert.equal(trocas.length, 1);
+});
+
+test('sugestões de favorito: rota de membro, passa o tipo e o texto', async (t) => {
+  const vistos = [];
+  const api = { saude: () => ({}), sugestoesDeFavorito: async (quem, params) => (vistos.push([quem.papel, params.get('tipo'), params.get('q')]), { itens: [{ t: 'Minecraft', sub: '', capa: '' }] }) };
+  const { servidor, base } = await subir(api);
+  t.after(() => servidor.close());
+  const r = await fetch(`${base}/api/favoritos/sugestoes?tipo=jogos&q=minec`, { headers: { 'X-Painel': '1' } });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { itens: [{ t: 'Minecraft', sub: '', capa: '' }] });
+  assert.deepEqual(vistos, [['admin', 'jogos', 'minec']]);
+});
