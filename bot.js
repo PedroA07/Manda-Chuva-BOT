@@ -40,7 +40,7 @@ import { lerRegistro, salvarRegistro } from './lib/registro.js';
 import { escadaDePunicoes, ID_ACEITO, pedacoDasRegras, temRegras } from './lib/regras.js';
 import { aplicarTema, hojeNoBrasil, horaNoBrasil, temaAtivo } from './lib/temas.js';
 import { apagarEstatisticas, contarCor, contarMensagem as contarMensagemDaPessoa, entrouNaCall, fecharCalls, gravarEstatisticas, lerEstatisticas, saiuDaCall, somarEvento, tempoDeCall } from './lib/estatisticas.js';
-import { apagarPerfil, DE_EVENTO, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, visualDoPerfil } from './lib/perfil.js';
+import { apagarPerfil, DE_EVENTO, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, textoDoAniversario, visualDoPerfil } from './lib/perfil.js';
 import { abertosDe, APAGAR, arquivar, avaliar, estaParado, haQuanto, lerTickets, mediaDeResposta, nomeDoCanal, numero, PARADO, pedacoDaAvaliacao, pedacoDasBoasVindas, pedacoDoFechamento, pedacoDoPainelTickets, reservarNumero, salvarTickets, textoDaTranscricao, ticketDoCanal, transcricao } from './lib/tickets.js';
 import { VERSAO } from './lib/versao.js';
 
@@ -1648,7 +1648,7 @@ async function dadosDaCarteirinha(m) {
   const medalhas = await Promise.all(fixadas.map((id) => baixarImagem(midia(`banners/medalhas/${id}.png`).url)));
   const s = lerEstatisticas().pessoas[m.id];
   return {
-    banner, cor: discord?.cor ?? null, avatar,
+    banner, cor: discord?.cor ?? null, avatar, ap: p.ap,
     nome: m.displayName, usuario: m.user.username, entrou: tempoDeCasa(m.joinedTimestamp),
     medalhas: medalhas.filter(Boolean),
     cargos: cargosVisiveis(m),
@@ -1728,9 +1728,12 @@ async function cartaoDoMembro(m) {
   const p = perfilDe(m.id);
   const v = await visualDe(m, p);
   const ganhas = new Set(medalhasDoMembro(m).filter((x) => x.ganha).map((x) => x.id));
+  // Aniversário só sai daqui do jeito que a pessoa deixou ver (escondido = nem a data vai pro site)
+  const niver = textoDoAniversario(lerAniversarios().find((x) => x.userId === m.id), p.niverVis, hojeNoBrasil());
   return {
     id: m.id, nome: m.displayName, usuario: m.user.username, avatar: v.avatar, entrou: m.joinedTimestamp,
     banner: v.banner, cor: v.cor, bio: p.bio, medalhas: p.fixadas.filter((id) => ganhas.has(id)), cargos: cargosVisiveis(m, 3),
+    ap: p.ap, niver,
   };
 }
 
@@ -1873,7 +1876,7 @@ async function responderPrivacidade(i) {
   const avisos = lerAvisos().filter((a) => a.userId === id).length;
   const lista = [
     `🎂 Aniversário: ${niver ? `${niver.d}${niver.ano ? `/${niver.ano}` : ''}` : 'nenhum'}`,
-    `🪪 Perfil do site: ${perfil ? `banner, foto, bio${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
+    `🪪 Perfil do site: ${perfil ? `banner, foto, bio, cores e fonte do cartão, quem vê seu aniversário${perfil.fixadas?.length ? ' e medalhas fixadas' : ''}` : 'nunca mexeu'}`,
     `📊 Contadores das medalhas: ${s ? `${s.m} mensagens, ${Math.floor((s.voz ?? 0) / 3600)} h em call, ${s.cores} trocas de cor` : 'nada ainda'}`,
     `📒 Avisos de moderação: ${avisos} (ficam com a staff até vencer, não dá pra apagar por aqui)`,
   ].join('\n');
@@ -1938,6 +1941,8 @@ export const api = {
       usuario: { id: m.id, nome: m.displayName, usuario: m.user.username, avatar: m.displayAvatarURL({ size: 128, extension: 'png' }), entrou: m.joinedTimestamp, cargos: cargosVisiveis(m) },
       perfil: perfilDe(m.id),
       visual: await visualDe(m),
+      // O próprio aniversário (só pra quem é dono): o site mostra a data e a prévia de cada visibilidade
+      niver: (({ d, ano } = {}) => (d ? { d, ano: ano ?? null } : null))(lerAniversarios().find((x) => x.userId === m.id)),
       medalhas,
       stats: { mensagens: s?.m ?? 0, horas: Math.floor(tempoDeCall(m.id).total / 3600), medalhas: medalhas.filter((x) => x.ganha).length },
     };

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { contarCor, contarMensagem, de, entrouNaCall, fecharCalls, fecharMes, lerEstatisticas, mesDe, saiuDaCall, somarEvento, tempoDeCall, zerarEstatisticas } from '../lib/estatisticas.js';
-import { bannerPadrao, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, visualDoPerfil, zerarPerfis } from '../lib/perfil.js';
+import { bannerPadrao, definirAnexo, lerPerfis, MEDALHAS, medalhasDe, perfilDe, salvarPerfil, textoDoAniversario, textoSobre, visualDoPerfil, zerarPerfis } from '../lib/perfil.js';
 import { abrir, criarEstado, criarSessao, lerEstado, lerSessao, linkDoDiscord, selar, voltaPermitida } from '../lib/sessao.js';
 
 const ID = '123456789012345678';
@@ -273,4 +273,51 @@ test('a lista de medalhas bate com as imagens do site (16 ids únicos)', () => {
   const ids = MEDALHAS.map((m) => m.id);
   assert.equal(new Set(ids).size, 16);
   assert.ok(ids.includes('rei-resenha') && ids.includes('mira-ouro'));
+});
+
+test('aparência: padrão creme com nome em Graduate e aniversário só com dia e mês', () => {
+  zerarPerfis();
+  const p = perfilDe(ID);
+  assert.deepEqual(p.ap, { fundo: '#FFFCF4', nome: '', nomeTipo: 'solida', grad: 0, fonte: 'Graduate', destaque: '#C4363C' });
+  assert.equal(p.niverVis, 'data');
+  // Perfil de antes da v12 (sem ap) ganha a aparência padrão
+  lerPerfis()[ID] = { banner: 'banners/perfil/jogos-2.jpg', bio: 'oi', fixadas: [] };
+  assert.equal(perfilDe(ID).ap.fonte, 'Graduate');
+});
+
+test('aparência: muda só o que veio, confere cores, fonte, degradê e visibilidade', async () => {
+  zerarPerfis();
+  const ok = await salvarPerfil(ID, { ap: { fundo: '#1f2a5c', fonte: 'Pacifico' }, niverVis: 'idade' }, []);
+  assert.deepEqual(ok.perfil.ap, { fundo: '#1F2A5C', nome: '', nomeTipo: 'solida', grad: 0, fonte: 'Pacifico', destaque: '#C4363C' });
+  assert.equal(ok.perfil.niverVis, 'idade');
+  const deg = await salvarPerfil(ID, { ap: { nomeTipo: 'degrade', grad: 3 } }, []);
+  assert.equal(deg.perfil.ap.fundo, '#1F2A5C');
+  assert.equal(deg.perfil.ap.grad, 3);
+  for (const ruim of [{ fundo: 'azul' }, { nome: '#12345' }, { destaque: '' }, { fonte: 'Comic Sans' }, { grad: 6 }, { grad: 1.5 }, { nomeTipo: 'arco-iris' }]) {
+    assert.ok((await salvarPerfil(ID, { ap: ruim }, [])).erro, JSON.stringify(ruim));
+  }
+  assert.ok((await salvarPerfil(ID, { ap: 'x' }, [])).erro);
+  assert.match((await salvarPerfil(ID, { niverVis: 'todo mundo' }, [])).erro, /aniversário/);
+  // Nome sólido com cor própria; '' volta pro automático
+  assert.equal((await salvarPerfil(ID, { ap: { nomeTipo: 'solida', nome: '#ff6ec7' } }, [])).perfil.ap.nome, '#FF6EC7');
+  assert.equal((await salvarPerfil(ID, { ap: { nome: '' } }, [])).perfil.ap.nome, '');
+});
+
+test('cor do texto: claro em fundo escuro, tinta em fundo claro', () => {
+  assert.deepEqual(textoSobre('#1F2A5C'), { escuro: true, txt: '#FFFCF4', sub: '#C9CBE0' });
+  assert.deepEqual(textoSobre('#1B1F33'), { escuro: true, txt: '#FFFCF4', sub: '#C9CBE0' });
+  assert.deepEqual(textoSobre('#FFFCF4'), { escuro: false, txt: '#1B1F33', sub: '#5A5E6E' });
+  assert.deepEqual(textoSobre('#F5C6D6'), { escuro: false, txt: '#1B1F33', sub: '#5A5E6E' });
+  assert.equal(textoSobre('lixo').escuro, false);
+});
+
+test('aniversário no perfil: escondido, só dia e mês ou com a idade', () => {
+  const hoje = { dia: 8, mes: 11, ano: 2026 };
+  assert.equal(textoDoAniversario({ d: '14/05', ano: 2004 }, 'idade', hoje), '14/05 · 22 anos');
+  assert.equal(textoDoAniversario({ d: '14/12', ano: 2004 }, 'idade', hoje), '14/12 · 21 anos');
+  assert.equal(textoDoAniversario({ d: '08/11', ano: 2005 }, 'idade', hoje), '08/11 · 21 anos');
+  assert.equal(textoDoAniversario({ d: '14/05', ano: 2004 }, 'data', hoje), '14/05');
+  assert.equal(textoDoAniversario({ d: '14/05', ano: null }, 'idade', hoje), '14/05');
+  assert.equal(textoDoAniversario({ d: '14/05', ano: 2004 }, 'oculto', hoje), null);
+  assert.equal(textoDoAniversario(null, 'idade', hoje), null);
 });
